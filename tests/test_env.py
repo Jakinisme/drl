@@ -185,12 +185,13 @@ def test_deadband_is_esp32_level():
 def test_domain_randomization_ranges():
     env = _env()
     env.reset()
-    ratio = env.dynamics.M_env / env.M0
+    ratio = env.dynamics.M_env / env.dynamics.M
     assert (ratio[:, 0] - 1.0).abs().max() <= env.r_mass + 1e-5
     assert (ratio[:, 1] - 1.0).abs().max() <= env.r_mass + 1e-5
     assert (ratio[:, 2] - 1.0).abs().max() <= env.r_inertia + 1e-5
-    dr = env.dynamics.D_lin_env / env.DL0
-    assert (dr - 1.0).abs().max() <= env.r_drag + 1e-5
+    # `set_params` couples mass_scale into the surge/sway linear drag (reports/R2.md §2)
+    dr = env.dynamics.D_lin_env / env.dynamics.D_lin
+    assert (dr - 1.0).abs().max() <= env.r_mass + env.r_drag + env.r_mass * env.r_drag + 1e-5
     assert (env.thrusters.lag_tau / env.lag0 - 1.0).abs().max() <= env.r_lag + 1e-5
     sf = env.thrusters.scale_fwd / env.sf0
     assert sf.max() <= 1.0 + env.r_gain + 1e-5

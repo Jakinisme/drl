@@ -24,12 +24,11 @@ resets finished envs before returning, so the returned obs row is the post-reset
 Only `est` enters the observation; `state` is used for reward, termination and
 `get_privileged_state()` (§7.4).
 
-TODO(B1): sensor noise/bias/latency randomisation is drawn batch-wide at full reset
-because `sim/sensors.py` exposes no per-env sigma hooks (per-env needs an A2 change).
+Randomisation (CONTRACT §3.4) is per env on **every** reset (partial resets included):
+mass/inertia/drag go through `dynamics.set_params`, thruster gain/lag/deadband/asymmetry
+through `thrusters.set_gains`, sensor noise/bias/latency through `sensors.set_noise`.
+Zeroing the whole `randomization:` block in the config therefore switches every draw off.
 TODO(CONTRACT T8): geofence radius, episode length, spawn/waypoint boxes are un-tuned.
-TODO: `sim/dynamics.py:set_params` and the `deadband`/`lag` knobs accept scalars only or
-reshape `(-1, 1)`, so the per-env randomisation below writes `M_env`/`D_*_env` directly;
-`ThrusterModel.set_gains` already takes `[k, 4]` tensors (reported in reports/B1.md).
 """
 
 import math
@@ -160,6 +159,12 @@ class AsvEnv:
         self.r_noise = float(rd["sensor_noise"])
         self.r_bias_deg = float(rd["sensor_bias_deg"])
         self.r_latency = float(rd["sensor_latency_s"])
+        # all ranges 0 -> "randomisation off": skip every draw and keep the nominal
+        # yaml parameters (see reports/R2.md §3)
+        self.randomize = any(v != 0.0 for v in (
+            self.r_mass, self.r_inertia, self.r_drag, self.r_gain, self.r_lag,
+            self.r_db, self.r_asym, self.r_weak_prob, self.r_noise,
+            self.r_bias_deg, self.r_latency))
 
         self.dynamics = Dynamics(self.vehicle, self.num_envs, device=dev, dtype=dtype, dt=self.dt)
         self.thrusters = ThrusterModel(self.vehicle, self.num_envs, device=dev, dtype=dtype)
@@ -169,9 +174,6 @@ class AsvEnv:
                                    self.num_envs, device=dev, dtype=dtype)
 
         # nominal copies the randomisation is drawn around
-        self.M0 = self.dynamics.M.clone()
-        self.DL0 = self.dynamics.D_lin.clone()
-        self.DQ0 = self.dynamics.D_quad.clone()
         self.sf0 = self.thrusters.nominal["scale_fwd"].clone()
         self.sr0 = self.thrusters.nominal["scale_rev"].clone()
         self.lag0 = float(self.thrusters.lag_tau0)
@@ -180,8 +182,8 @@ class AsvEnv:
         self._sensor_base = {key: float(getattr(sen, key)) for key in
                              ("gps_pos_sigma", "gps_vel_sigma", "gps_cog_sigma",
                               "gyro_sigma", "mag_sigma")}
+        self._gyro_bias0 = float(sen.gyro_bias_max)
         self._latency0 = float(sen.gps_latency)
-        self._mag_bias0 = float(sen.mag_bias_max)
 
         cur = self.disturbance.cfg.get("curriculum", {}) or {}
         self.scale_by_level = [float(v) for v in cur.get("scale_by_level", [0.0])]
@@ -270,11 +272,13 @@ class AsvEnv:
 
         self.dynamics.reset(idx)
         self.thrusters.reset(idx)
-        self.sensors.reset(idx)
         self.disturbance.reset(idx, level=self._level_value())
-        self._randomize(idx, k)
-        if full:
-            self._sensor_randomization()
+        # randomise BEFORE sensors.reset: the gyro/mag bias draw of this episode must use
+        # the per-env bounds set here (CONTRACT §3.4)
+        if self.randomize:
+            self._randomize(idx, k)
+            self._sensor_randomization(idx, k)
+        self.sensors.reset(idx)
         self.ep_step[idx] = 0
         self.prev_action[idx] = 0.0
 
@@ -290,12 +294,9 @@ class AsvEnv:
         ms = 1.0 + self._unif(k) * self.r_mass
         is_ = 1.0 + self._unif(k) * self.r_inertia
         ds = 1.0 + self._unif(k) * self.r_drag
-        M = self.M0.unsqueeze(0).repeat(k, 1)
-        M[:, :2] = M[:, :2] * ms.unsqueeze(1)
-        M[:, 2] = M[:, 2] * is_
-        self.dynamics.M_env[idx] = M
-        self.dynamics.D_lin_env[idx] = self.DL0.unsqueeze(0) * ds.unsqueeze(1)
-        self.dynamics.D_quad_env[idx] = self.DQ0.unsqueeze(0) * ds.unsqueeze(1)
+        # set_params couples mass_scale into the linear/quadratic drag of surge/sway
+        # (see reports/R2.md §2 for the per-axis factors and the change vs the old writer)
+        self.dynamics.set_params(idx, mass_scale=ms, inertia_scale=is_, drag_scale=ds)
 
         sf = self.sf0.unsqueeze(0) * (1.0 + self._unif(k, 4) * self.r_gain)
         sr = self.sr0.unsqueeze(0) * (1.0 + self._unif(k, 4) * self.r_asym)
@@ -310,13 +311,21 @@ class AsvEnv:
         db = (self.db0 + self._unif(k) * self.r_db).clamp(min=0.0)
         self.thrusters.set_gains(idx, scale_fwd=sf, scale_rev=sr, lag_tau=lag, deadband=db)
 
-    def _sensor_randomization(self) -> None:
-        """Batch-wide sensor draw (see module TODO): no per-env sigma hooks in sim/."""
-        f = 1.0 + float(self._unif(())) * self.r_noise
-        for key, base in self._sensor_base.items():
-            setattr(self.sensors, key, base * f)
-        self.sensors.mag_bias_max = self.r_bias_deg
-        self.sensors.gps_latency = max(0.0, self._latency0 + float(self._unif(())) * self.r_latency)
+    def _sensor_randomization(self, idx, k: int) -> None:
+        """Per-env sensor noise/bias/latency draw for `idx` (CONTRACT §3.4)."""
+        b = self._sensor_base
+        f = 1.0 + self._unif(k) * self.r_noise
+        self.sensors.set_noise(
+            idx,
+            pos_noise_m=b["gps_pos_sigma"] * f,
+            vel_noise_mps=b["gps_vel_sigma"] * f,
+            cog_noise_deg=b["gps_cog_sigma"] * f,
+            gyro_noise_dps=b["gyro_sigma"] * f,
+            mag_noise_deg=b["mag_sigma"] * f,
+            gyro_bias_dps=self._gyro_bias0 * (1.0 + self._unif(k) * self.r_noise),
+            mag_bias_deg=self.r_bias_deg * (1.0 + self._unif(k) * self.r_noise),
+            gps_latency_s=(self._latency0 + self._unif(k) * self.r_latency).clamp(min=0.0),
+        )
 
     # ------------------------------------------------------------------ obs
     def _next_wps(self):

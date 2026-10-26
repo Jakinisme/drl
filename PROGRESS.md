@@ -390,5 +390,59 @@ B1's to make before any training run.**
 
 ---
 
+## Fix unit R2 — env samples per env (Wave 2 follow-up) — DONE 2026-10-26
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+140 passed, 14 warnings in 35.21s
+```
+
+- `envs/asv_env.py` now calls `dynamics.set_params(idx, …)` and `sensors.set_noise(idx, …)`
+  per env on **every** reset, with the randomisation moved **before** `sensors.reset(idx)` so
+  an episode's bias draw sees its own bounds; the old `if full:` guard is gone. New
+  `randomize` flag turns it all off.
+- `configs/env.yaml` unchanged — every range already existed, no key added, no old value
+  touched (mtime unchanged, confirmed).
+- `sim/*.py` untouched (still R1's 16:29 version), `tests/test_obs_parity.py` untouched and
+  passing, so the torch observation builder still matches `runtime/obs_np.py`.
+- New `tests/test_env_randomization.py` (5 tests): two envs differ after one randomised reset
+  (mass, drag, sensor noise/bias/latency); with randomisation off the rollout is identical to
+  the pre-change snapshot for the same seed; and a source-level assertion that the old
+  `setattr(self.sensors, "gps_latency"/…)` style is gone.
+
+### Effective factor on the physics parameters (verified independently)
+
+`set_params` applies, per axis, with `ms = mass_scale`, `ins = inertia_scale`, `ds = drag_scale`:
+
+| tensor | x (surge) | y (sway) | n (yaw) |
+|---|---|---|---|
+| `M_env` | `· ms` | `· ms` | `· ins` |
+| `D_lin_env` | `· ms · ds` | `· ms · ds` | `· ds` |
+| `D_quad_env` | `· ms · ds` | `· ms · ds` | `· ds` |
+
+Spot-checked directly: `ms = 1.3, ds = 1.2` → `M_x` 15.0 → **19.5**, `D_lin_x` 6.0 → **9.36**,
+`D_quad_x` 4.0 → **6.24**, `D_lin_n` 1.5 → **1.8**. The **old** env writer applied `ds` only,
+so surge/sway drag ranges widen (`0.49–1.69` vs `0.70–1.30`; e.g. `D_lin_x` 9.36 vs 7.20 for
+the same draw). **Open question, not fixed:** coupling `mass_scale` into drag is a modelling
+choice (a heavier hull does not necessarily have more drag); if it is unwanted, the fix belongs
+in `sim/dynamics.py:set_params`, not in the env.
+
+### Reported, not fixed
+
+1. `SensorModel.reset` accepts no initial position and the env passes none, so every episode
+   starts the estimator at the ENU origin while the true pose is elsewhere.
+2. Consequence: the GPS latency ring is zero-filled, so for the first `lat` steps the fix
+   reports ENU `(0, 0)` (0.2 s → 10 steps; measured `est (0.18, 0.07)` vs truth `(1.15,
+   18.61)`). The policy therefore sees a large phantom error at episode start.
+3. `env.yaml:sensor_bias_deg` and `sensors.yaml:mag.bias_deg` are two sources for the same
+   quantity.
+4. A partial reset that raises the batch's maximum latency rebuilds the GPS ring for **all**
+   envs, wiping their fix history.
+
+**Status: R2 done — 140 passed. Still stopped at the Wave 2 gate; items 1-4 above are
+candidates for Wave 3 (C1).**
+
+---
+
 **Nothing here was validated against the real vessel.** All numbers above are from
 commands run on the dev box; the physical model is placeholder-parameterised throughout.
