@@ -7,10 +7,12 @@ Structure reproduces what the policy will meet on the water (INSPECTION §3, `fu
 
 * every source accumulates its own `dt` per env and takes a sample on its `rate_hz`
   epoch; between epochs the last sample is held (`gps.hold_last` repeats the fix);
-* GPS latency is a fixed rolling window of past *true* positions — the fix is what the
-  receiver computed `latency_s` ago, not what is true now. lat/lon are always derived
-  back from the noisy ENU fix, so `gps_lat/lon`, `gps_sog`, `gps_cog_deg` stay mutually
-  consistent even while the fix is stale;
+* GPS latency is a rolling window of past *true* positions — the fix is what the
+  receiver computed `latency_s` ago, not what is true now. The window holds the batch
+  maximum lag and each env indexes its own delay (`set_noise(gps_latency_s=[...])`), so
+  latency can be randomised per env. lat/lon are always derived back from the noisy ENU
+  fix, so `gps_lat/lon`, `gps_sog`, `gps_cog_deg` stay mutually consistent even while the
+  fix is stale;
 * heading = mag-primary + gyro propagation, low gain `mag_weight/(mag_weight+gyro_weight)`
   (the measured 0.02 of `fusion.py:54`); GPS COG pulls the heading only when
   `sog >= gps_heading_min_speed_mps`;
@@ -105,6 +107,18 @@ class SensorModel:
         self.mag_gain = self.mag_weight / w if w > 0.0 else 1.0
 
         z = lambda *s: torch.zeros(*s, device=self.device, dtype=dtype)  # noqa: E731
+        # per-env noise/latency (CONTRACT §3.4 `randomization`): nominal from yaml,
+        # overwritten by `set_noise()` on reset. The float attributes above stay the
+        # nominal values (the env reads them once, at construction).
+        full = lambda v: torch.full((n,), float(v), device=self.device, dtype=dtype)  # noqa: E731
+        self.pos_sigma_env = full(self.gps_pos_sigma)
+        self.vel_sigma_env = full(self.gps_vel_sigma)
+        self.cog_sigma_env = full(self.gps_cog_sigma)
+        self.gyro_sigma_env = full(self.gyro_sigma)
+        self.gyro_bias_max_env = full(self.gyro_bias_max)
+        self.mag_sigma_env = full(self.mag_sigma)
+        self.mag_bias_max_env = full(self.mag_bias_max)
+        self.latency_env = full(self.gps_latency)
         self.acc = {k: z(n) for k in self.periods}      # time since last epoch [s]
         self.age = {k: z(n) for k in self.periods}      # time since last sample [s]
         self.gyro_bias = z(n)                          # deg/s, per episode
@@ -131,8 +145,8 @@ class SensorModel:
         k = self.num_envs if env_ids is None else int(env_ids.numel())
         sgn = lambda *s: torch.empty(*s, device=self.device, dtype=self.dtype).uniform_(-1.0, 1.0)  # noqa: E731
 
-        self.gyro_bias[idx] = sgn(k) * self.gyro_bias_max
-        self.mag_bias[idx] = sgn(k) * self.mag_bias_max
+        self.gyro_bias[idx] = sgn(k) * self.gyro_bias_max_env[idx]
+        self.mag_bias[idx] = sgn(k) * self.mag_bias_max_env[idx]
         for key, per in self.periods.items():
             self.acc[key][idx] = per          # fire on the first step, no dead time
             self.age[key][idx] = 1e9          # nothing is fresh before the first sample
@@ -150,6 +164,34 @@ class SensorModel:
         if self._buf is not None:
             self._buf[idx] = 0.0
 
+    def set_noise(self, env_ids=None, pos_noise_m=None, vel_noise_mps=None,
+                  cog_noise_deg=None, gyro_noise_dps=None, gyro_bias_dps=None,
+                  mag_noise_deg=None, mag_bias_deg=None,
+                  gps_latency_s=None) -> None:
+        """Per-env measurement noise/latency (CONTRACT §3.4 `randomization`).
+
+        Each value is a scalar or a `[k]` tensor/array (one per selected env);
+        `None` leaves that quantity unchanged. `gyro_bias_dps`/`mag_bias_deg` are
+        the +/- uniform bound and are drawn at the **next** `reset()`; the rest
+        take effect on the next `step()`. `gps_latency_s` is per env, resampled
+        into the delay ring on the next `step()`.
+        """
+        idx = slice(None) if env_ids is None else env_ids
+        k = self.num_envs if env_ids is None or isinstance(env_ids, slice) \
+            else int(torch.as_tensor(env_ids).reshape(-1).numel())
+        for attr, val in (("pos_sigma_env", pos_noise_m), ("vel_sigma_env", vel_noise_mps),
+                          ("cog_sigma_env", cog_noise_deg), ("gyro_sigma_env", gyro_noise_dps),
+                          ("gyro_bias_max_env", gyro_bias_dps),
+                          ("mag_sigma_env", mag_noise_deg),
+                          ("mag_bias_max_env", mag_bias_deg),
+                          ("latency_env", gps_latency_s)):
+            if val is None:
+                continue
+            got = torch.as_tensor(val, device=self.device, dtype=self.dtype).reshape(-1)
+            if got.numel() not in (1, k):
+                raise ValueError(f"{attr} needs 1 or {k} values, got {got.numel()}")
+            getattr(self, attr)[idx] = got.expand(k) if got.numel() == 1 else got
+
     def step(self, true_state: torch.Tensor, dt: float) -> dict[str, torch.Tensor]:
         """One sim step -> measurement dict (CONTRACT §4.4 table)."""
         dt = float(dt)
@@ -157,14 +199,17 @@ class SensorModel:
         n = true_state.shape[0]
         pos = true_state[:, :2]
 
-        # ---- GPS latency: fixed rolling window of past true positions
-        lag = max(1, int(round(self.gps_latency / dt)))
+        # ---- GPS latency: one rolling window of past true positions (col 0 = now,
+        # col j = j steps ago) with a PER-ENV delay index; the window holds the batch
+        # maximum lag, so a slow env does not force a longer queue on the others.
+        lag_i = torch.round(self.latency_env / dt).long().clamp(1, 1024)   # steps
+        lag = int(lag_i.max())
         if self._buf is None or self._buf.shape != (n, lag + 1, 2):
             self._buf = pos.unsqueeze(1).repeat(1, lag + 1, 1)
         else:
             self._buf = torch.roll(self._buf, shifts=1, dims=1)
             self._buf[:, 0] = pos
-        delayed = self._buf[:, -1]
+        delayed = torch.gather(self._buf, 1, lag_i.view(n, 1, 1).expand(n, 1, 2)).squeeze(1)
 
         def epoch(key: str) -> torch.Tensor:
             a = self.acc[key] + dt
@@ -180,15 +225,15 @@ class SensorModel:
         # ---- gps fix (position via latency window; velocity of the true state now)
         if bool(g_new.any()):
             noise = torch.randn(n, 2, device=dev, dtype=dtp)
-            fix = delayed + noise * self.gps_pos_sigma
+            fix = delayed + noise * self.pos_sigma_env.unsqueeze(1)
             psi = true_state[:, 2]
             u = true_state[:, 3]
             v = true_state[:, 4]
-            ve = (u * torch.sin(psi) + v * torch.cos(psi)) + torch.randn(n, device=dev, dtype=dtp) * self.gps_vel_sigma
-            vn = (u * torch.cos(psi) - v * torch.sin(psi)) + torch.randn(n, device=dev, dtype=dtp) * self.gps_vel_sigma
+            ve = (u * torch.sin(psi) + v * torch.cos(psi)) + torch.randn(n, device=dev, dtype=dtp) * self.vel_sigma_env
+            vn = (u * torch.cos(psi) - v * torch.sin(psi)) + torch.randn(n, device=dev, dtype=dtp) * self.vel_sigma_env
             sog = torch.sqrt(ve * ve + vn * vn)
             cog = _wrap180(torch.rad2deg(torch.atan2(ve, vn))
-                           + torch.randn(n, device=dev, dtype=dtp) * self.gps_cog_sigma)
+                           + torch.randn(n, device=dev, dtype=dtp) * self.cog_sigma_env)
 
             self.gps_enu = torch.where(g_new.unsqueeze(1), fix, self.gps_enu)
             self.sog = torch.where(g_new, sog, self.sog)
@@ -204,14 +249,14 @@ class SensorModel:
         # ---- imu gyro sample
         if bool(i_new.any()):
             meas = torch.rad2deg(true_state[:, 5]) + self.gyro_bias \
-                + torch.randn(n, device=dev, dtype=dtp) * self.gyro_sigma
+                + torch.randn(n, device=dev, dtype=dtp) * self.gyro_sigma_env
             self.gyro = torch.where(i_new, meas, self.gyro)
             self.age["imu"] = torch.where(i_new, torch.zeros_like(self.age["imu"]), self.age["imu"])
 
         # ---- magnetometer sample
         if bool(m_new.any()):
             meas = _wrap180(_wrap180(torch.rad2deg(true_state[:, 2])) + self.mag_bias
-                            + torch.randn(n, device=dev, dtype=dtp) * self.mag_sigma)
+                            + torch.randn(n, device=dev, dtype=dtp) * self.mag_sigma_env)
             self.mag = torch.where(m_new, meas, self.mag)
             self.age["mag"] = torch.where(m_new, torch.zeros_like(self.age["mag"]), self.age["mag"])
 

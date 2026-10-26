@@ -69,21 +69,46 @@ class Dynamics:
         self.D_quad_env[idx] = self.D_quad
 
     def set_params(self, env_ids, mass_scale=None, inertia_scale=None,
-                   drag_scale=None) -> None:
-        """Per-env randomisation (CONTRACT §3.4): scalar/tensor scale factors."""
+                   drag_scale=None, quad_drag_scale=None) -> None:
+        """Per-env randomisation (CONTRACT §3.4).
+
+        `env_ids` selects rows (None = all). Every `*_scale` is a scalar, a 0-d
+        tensor or a `[k]` tensor/array with one value per selected env; `None`
+        restores that quantity to nominal. `mass_scale` scales both surge/sway
+        inertia and their linear drag (as before); `quad_drag_scale` is an extra
+        factor on the quadratic drag only.
+        """
         idx = slice(None) if env_ids is None else env_ids
-        m = self.M.clone()
-        d = torch.ones_like(m)
-        if mass_scale is not None:
-            m[:2] = m[:2] * float(mass_scale)
-            d[:2] = d[:2] * float(mass_scale)
-        if inertia_scale is not None:
-            m[2] = m[2] * float(inertia_scale)
-        if drag_scale is not None:
-            d = d * float(drag_scale)
-        self.M_env[idx] = m
+        k = self.num_envs if env_ids is None or isinstance(env_ids, slice) \
+            else int(torch.as_tensor(env_ids).reshape(-1).numel())
+        ms = self._scales(mass_scale, k)
+        ins = self._scales(inertia_scale, k)
+        ds = self._scales(drag_scale, k)
+        qs = self._scales(quad_drag_scale, k)
+
+        M = self.M.expand(k, 3).clone()
+        d = torch.ones(k, 3, device=self.device, dtype=self.dtype)
+        if ms is not None:
+            M[:, :2] = M[:, :2] * ms.unsqueeze(1)
+            d[:, :2] = d[:, :2] * ms.unsqueeze(1)
+        if ins is not None:
+            M[:, 2] = M[:, 2] * ins
+        if ds is not None:
+            d = d * ds.unsqueeze(1)
+        self.M_env[idx] = M
         self.D_lin_env[idx] = self.D_lin * d
-        self.D_quad_env[idx] = self.D_quad * d
+        self.D_quad_env[idx] = self.D_quad * (d if qs is None else d * qs.unsqueeze(1))
+
+    def _scales(self, val, k: int) -> torch.Tensor | None:
+        """Broadcast a scalar / `[k]` scale to `[k]` on this module's device+dtype."""
+        if val is None:
+            return None
+        t = torch.as_tensor(val, device=self.device, dtype=self.dtype).reshape(-1)
+        if t.numel() == 1:
+            return t.expand(k)
+        if t.numel() != k:
+            raise ValueError(f"scale must have 1 or {k} values, got {t.numel()}")
+        return t
 
     # ------------------------------------------------------------------ physics
     def derivative(self, state: torch.Tensor, tau: torch.Tensor) -> torch.Tensor:
