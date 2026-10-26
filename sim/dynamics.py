@@ -74,9 +74,11 @@ class Dynamics:
 
         `env_ids` selects rows (None = all). Every `*_scale` is a scalar, a 0-d
         tensor or a `[k]` tensor/array with one value per selected env; `None`
-        restores that quantity to nominal. `mass_scale` scales both surge/sway
-        inertia and their linear drag (as before); `quad_drag_scale` is an extra
-        factor on the quadratic drag only.
+        restores that quantity to nominal. Factors are independent per quantity:
+        `mass_scale` -> `M` of x/y only, `inertia_scale` -> `M` of n only,
+        `drag_scale` -> `D_lin` and `D_quad` of all three axes, `quad_drag_scale`
+        an extra factor on `D_quad` only. Mass never touches drag (reports/R3.md;
+        the R2 §2 table is obsolete).
         """
         idx = slice(None) if env_ids is None else env_ids
         k = self.num_envs if env_ids is None or isinstance(env_ids, slice) \
@@ -90,7 +92,6 @@ class Dynamics:
         d = torch.ones(k, 3, device=self.device, dtype=self.dtype)
         if ms is not None:
             M[:, :2] = M[:, :2] * ms.unsqueeze(1)
-            d[:, :2] = d[:, :2] * ms.unsqueeze(1)
         if ins is not None:
             M[:, 2] = M[:, 2] * ins
         if ds is not None:

@@ -444,5 +444,36 @@ candidates for Wave 3 (C1).**
 
 ---
 
+## Fix unit R3 — sensor reset/ring/bias + mass/drag decoupling — DONE 2026-10-26
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+143 passed, 14 warnings in 34.76s
+```
+
+- `SensorModel.reset(env_ids, pos=None, heading=None)` seeds `pos_hat`, `gps_enu`, `heading`
+  **and every GPS-ring slot** with the episode's true start pose; the no-argument call is
+  bit-identical to before. Phantom start error: **38.1 m max → 1.53 m** (0.52 m mean = the GPS
+  noise floor), same on CUDA.
+- The GPS ring is allocated **once**, `cap = clamp(round(max_latency_s/dt), 1, 1024)` (env
+  passes `0.2 + 0.1 s` → 15 steps, 256 KB at 2048 envs, still one `gather`). A partial reset
+  writes only `_buf[idx]`; no reallocation, no other env's history touched.
+- Bias: single source `configs/sensors.yaml:mag.bias_deg` (5.0). `env.yaml:sensor_bias_deg`
+  was read by nobody after the change, so the dead key is **removed** (orchestrator edit, no
+  numeric value changed; `sensor_noise` / `sensor_latency_s` untouched and now marked per-env).
+- `sim/dynamics.py:set_params` decoupled — verified directly with `ms=1.3, ins=1.1, ds=1.2`:
+  `M` = **[19.5, 26.0, 1.98]** (= 15·ms, 20·ms, 1.8·ins), `D_lin` = **[7.2, 21.6, 1.8]**
+  (= 6·ds, 18·ds, 1.5·ds), `D_quad` = **[4.8, 14.4, 0.96]**. Mass no longer leaks into drag;
+  the factor table in the R2 section above is obsolete.
+- Env edits are six lines, listed in `reports/R3.md` §5. `tests/test_obs_parity.py` and
+  `configs/*` are untouched, so the torch observation builder still matches `runtime/obs_np.py`.
+- One rollout hash was re-recorded (`0af78a8e…` → `e115cfc5…`); the agent proved the only cause
+  is pose seeding by patching `reset` to ignore `pos`/`heading` and reproducing the old hash
+  bit-exactly.
+
+**Status: R3 done — 143 passed. Still stopped at the Wave 2 gate.**
+
+---
+
 **Nothing here was validated against the real vessel.** All numbers above are from
 commands run on the dev box; the physical model is placeholder-parameterised throughout.

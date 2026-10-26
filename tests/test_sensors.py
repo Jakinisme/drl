@@ -171,3 +171,71 @@ def test_no_nan_over_500_steps():
         out = m.step(s, DT)
         for k, v in out.items():
             assert bool(torch.isfinite(v.to(torch.float32)).all()), f"{k} not finite at {i}"
+
+
+# ---------------------------------------------------------------- R3: reset with a pose
+QUIET = dict(imu={"gyro_noise_dps": 0.0, "gyro_bias_dps": 0.0},
+             mag={"noise_deg": 0.0, "bias_deg": 0.0})
+
+
+def _quiet(**gps):
+    """Noise-free config (except the gps keys given), so the fix equals the seeded pose."""
+    return cfg(gps=dict(pos_noise_m=0.0, vel_noise_mps=0.0, cog_noise_deg=0.0, **gps), **QUIET)
+
+
+def test_reset_with_initial_pose_seeds_estimator_and_gps_ring():
+    """R3: `reset(pos=, heading=)` starts the estimator at the spawn pose, not the origin."""
+    c = _quiet(latency_s=0.2)
+    n = 2
+    pos = torch.tensor([[12.0, -7.0], [-4.0, 20.5]])
+    psi = torch.tensor([0.7, -2.1])
+    s = torch.zeros(n, 6)
+    s[:, :2], s[:, 2] = pos, psi
+
+    m = SensorModel(c, n, device="cpu", max_latency_s=0.3)
+    m.reset(pos=pos, heading=psi)
+    out = m.step(s, DT)                    # lag = 10 steps, every ring slot = spawn pose
+    assert torch.allclose(out["est"][:, :2], pos, atol=1e-3)
+    assert torch.allclose(out["heading_deg"], torch.rad2deg(psi), atol=1e-3)
+
+    # no pose -> the old zero start (allocate the ring first, as in a real 2nd episode)
+    m2 = SensorModel(c, n, device="cpu", max_latency_s=0.3)
+    m2.step(s, DT)
+    m2.reset()
+    assert float(m2.step(s, DT)["est"][:, :2].norm(dim=1).max()) < 1e-6
+
+    try:
+        m.reset(pos=torch.zeros(3, 2))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("wrong-length pos must raise")
+
+
+def test_partial_reset_with_larger_latency_keeps_other_envs_gps_history():
+    """R3: the ring is allocated once from `max_latency_s`; a partial reset cannot grow it,
+    so env 0 keeps its fix history bit for bit and keeps reporting its own delay."""
+    c = _quiet(latency_s=0.0, rate_hz=50.0)
+    n, u = 2, 1.0
+    m = SensorModel(c, n, device="cpu", max_latency_s=0.5)
+    m.set_noise(None, gps_latency_s=torch.tensor([0.0, 0.0]))
+
+    def st(i):
+        s = torch.zeros(n, 6)
+        s[:, 0], s[:, 3] = u * i * DT, u
+        return s
+
+    for i in range(20):
+        out = m.step(st(i), DT)
+    assert m._cap == 25 and m._buf.shape == (n, 26, 2)     # sized once, from max_latency_s
+    before = m._buf[0].clone()
+
+    m.set_noise(torch.tensor([1]), gps_latency_s=0.4)      # 20 steps: larger than anything drawn
+    m.reset(torch.tensor([1]), pos=torch.tensor([[50.0, 60.0]]), heading=torch.tensor([0.0]))
+    assert torch.equal(m._buf[0], before)                  # env 0 history bit-identical
+    assert m._buf.shape == (n, 26, 2)                      # no reallocation
+
+    out = m.step(st(20), DT)
+    assert abs(float(m.gps_enu[0, 0]) - u * 19 * DT) < 1e-6   # env 0: its own 1-step lag
+    assert abs(float(m.gps_enu[1, 0]) - 50.0) < 1e-6          # env 1: seeded spawn, 20 steps
+    assert float(out["est"][0, 0]) > 0.3                      # env 0 not dragged to env 1's pose

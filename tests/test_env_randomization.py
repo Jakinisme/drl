@@ -19,13 +19,19 @@ from envs import asv_env
 from envs.asv_env import AsvEnv, load_config
 
 N = 8
+# `sensor_bias_deg` dropped in R3: env.yaml's key is no longer read, the magnetometer
+# bias bound comes from sensors.yaml `mag.bias_deg` (reports/R3.md §3)
 ZERO_KEYS = ("mass", "inertia", "drag", "thruster_gain", "thruster_lag",
              "thruster_deadband", "fwd_rev_asymmetry", "weak_thruster_prob",
-             "sensor_noise", "sensor_bias_deg", "sensor_latency_s")
+             "sensor_noise", "sensor_latency_s")
 
-# sha256 of an 8-env, 15-step rollout with every randomisation range at 0, recorded from
-# `git show 6c4c1b7:envs/asv_env.py` (the pre-R2 env) with the same script.
-PRE_CHANGE_HASH = "0af78a8edc3126899631be80a110f5cf8f80f24ec54829e47f82a24e2069c61e"
+# sha256 of an 8-env, 15-step rollout with every randomisation range at 0.
+# Re-recorded in R3: the pre-R2 value (0af78a8e…) pinned a rollout whose episodes started
+# with the estimator at the ENU origin. R3 seeds the estimator + GPS ring with the spawn
+# pose (reports/R3.md §1), so the reset obs legitimately changed. Verified that ignoring
+# `pos`/`heading` in `SensorModel.reset` reproduces 0af78a8e… bit for bit, i.e. seeding is
+# the only difference; the value below still fails on any other drift.
+PRE_CHANGE_HASH = "e115cfc54cfdc7dcaf33c515cac4da0ff4abe414ed17761fb337f5e43d307ece"
 
 
 def _cfg(zero: bool = False, **over) -> dict:
@@ -97,27 +103,28 @@ def test_randomisation_only_touches_reset_envs():
 
 
 def test_effective_factors_on_mass_and_drag_are_the_documented_ones():
-    """M/D_lin/D_quad per axis for (mass_scale, inertia_scale, drag_scale) — R2.md §2."""
+    """M/D_lin/D_quad per axis for (mass_scale, inertia_scale, drag_scale) — R3.md §4."""
     ms, ins, ds = 1.3, 0.8, 1.2
     env = AsvEnv(cfg=_cfg(zero=True), num_envs=N, device="cpu", seed=0)
     dyn = env.dynamics
     dyn.set_params(None, mass_scale=ms, inertia_scale=ins, drag_scale=ds)
     want_M = torch.tensor([ms, ms, ins], dtype=torch.float32)
-    want_D = torch.tensor([ms * ds, ms * ds, ds], dtype=torch.float32)   # mass couples in
+    want_D = torch.tensor([ds, ds, ds], dtype=torch.float32)   # drag only: mass is decoupled
     for i in range(N):
         assert torch.allclose(dyn.M_env[i] / dyn.M, want_M, atol=1e-6)
         assert torch.allclose(dyn.D_lin_env[i] / dyn.D_lin, want_D, atol=1e-6)
         assert torch.allclose(dyn.D_quad_env[i] / dyn.D_quad, want_D, atol=1e-6)
 
-    # the env's own reset path applies exactly that: recover ms/is from M, then check drag
+    # the env's own reset path applies exactly that: drag factor == drag_scale alone
     env.reset()
     ratio_M = env.dynamics.M_env / env.dynamics.M
     ratio_L = env.dynamics.D_lin_env / env.dynamics.D_lin
     ratio_Q = env.dynamics.D_quad_env / env.dynamics.D_quad
     assert (ratio_M[:, :2] - 1.0).abs().max() <= env.r_mass + 1e-5
     assert (ratio_M[:, 2] - 1.0).abs().max() <= env.r_inertia + 1e-5
-    assert torch.allclose(ratio_L[:, :2], ratio_M[:, :2] * ratio_L[:, 2:3], atol=1e-5)
-    assert torch.allclose(ratio_Q, ratio_L, atol=1e-6)
+    assert (ratio_L - 1.0).abs().max() <= env.r_drag + 1e-5
+    assert torch.allclose(ratio_L, ratio_L[:, 2:3].expand(N, 3), atol=1e-6)   # same ds, 3 axes
+    assert torch.allclose(ratio_Q, ratio_L, atol=1e-6)                        # no quad range
 
 
 def test_old_setattr_sensor_writer_is_gone():
@@ -128,3 +135,15 @@ def test_old_setattr_sensor_writer_is_gone():
         assert not re.search(rf"self\.sensors\.{attr}\s*(=[^=]|\*=)", src), attr
     # the per-env entry points are what the env calls instead
     assert "set_noise(" in src and "set_params(" in src
+
+
+def test_episode_starts_with_the_estimator_at_the_spawn_pose():
+    """R3 §1: reset seeds `pos_hat`/`gps_enu`/the GPS ring with the spawn pose, so the
+    first estimate is where the vessel is — not the ENU origin (the old phantom error)."""
+    env = AsvEnv(cfg=_cfg(), num_envs=N, device="cpu", seed=5)
+    env.reset()
+    truth = env.state[:, :2]
+    err = (env.meas["est"][:, :2] - truth).norm(dim=1)
+    far = truth.norm(dim=1) > 5.0                    # envs whose old error was ≥ 5 m
+    assert bool(far.any())
+    assert float(err[far].max()) < 2.0, float(err[far].max())   # pos_noise_m = 0.4

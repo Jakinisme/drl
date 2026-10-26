@@ -106,8 +106,8 @@ def test_dynamics_per_env_mass_and_drag_change_step_response():
     dl0, dq0 = VEH["drag_linear"]["x"], VEH["drag_quadratic"]["x"]
     for i in range(2):
         m = m0 * float(ms[i])
-        dl = dl0 * float(ms[i]) * float(ds[i])     # mass_scale also scales D_lin, as before
-        dq = dq0 * float(ms[i]) * float(ds[i])
+        dl = dl0 * float(ds[i])                    # drag_scale only: mass does not touch drag
+        dq = dq0 * float(ds[i])
         u = 0.5
         want = (m / DT * u + 3.0 - dq * u * abs(u)) / (m / DT + dl)
         assert abs(float(out[i, 3]) - want) < 1e-5, (i, float(out[i, 3]), want)

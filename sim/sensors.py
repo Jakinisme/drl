@@ -8,11 +8,13 @@ Structure reproduces what the policy will meet on the water (INSPECTION §3, `fu
 * every source accumulates its own `dt` per env and takes a sample on its `rate_hz`
   epoch; between epochs the last sample is held (`gps.hold_last` repeats the fix);
 * GPS latency is a rolling window of past *true* positions — the fix is what the
-  receiver computed `latency_s` ago, not what is true now. The window holds the batch
-  maximum lag and each env indexes its own delay (`set_noise(gps_latency_s=[...])`), so
-  latency can be randomised per env. lat/lon are always derived back from the noisy ENU
-  fix, so `gps_lat/lon`, `gps_sog`, `gps_cog_deg` stay mutually consistent even while the
-  fix is stale;
+  receiver computed `latency_s` ago, not what is true now. The window is allocated
+  **once** with the batch's maximum possible lag (`max_latency_s`, i.e. the env.yaml
+  latency range) and is never rebuilt, so a partial reset with a larger latency
+  cannot wipe another env's fix history; each env indexes its own delay
+  (`set_noise(gps_latency_s=[...])`) inside that window with one `gather`. lat/lon
+  are always derived back from the noisy ENU fix, so `gps_lat/lon`, `gps_sog`,
+  `gps_cog_deg` stay mutually consistent even while the fix is stale;
 * heading = mag-primary + gyro propagation, low gain `mag_weight/(mag_weight+gyro_weight)`
   (the measured 0.02 of `fusion.py:54`); GPS COG pulls the heading only when
   `sog >= gps_heading_min_speed_mps`;
@@ -54,7 +56,7 @@ def _wrap180(a):
 
 class SensorModel:
     def __init__(self, cfg: dict, num_envs: int, device: str = "cuda",
-                 dtype=torch.float32) -> None:
+                 dtype=torch.float32, max_latency_s: float | None = None) -> None:
         self.cfg = cfg
         self.num_envs = int(num_envs)
         self.device = torch.device(device)
@@ -119,6 +121,11 @@ class SensorModel:
         self.mag_sigma_env = full(self.mag_sigma)
         self.mag_bias_max_env = full(self.mag_bias_max)
         self.latency_env = full(self.gps_latency)
+        # Largest delay the ring must ever hold: the caller passes the batch maximum
+        # any draw can produce (env.yaml latency_s +/- sensor_latency_s). The ring is
+        # allocated once, on the first step(), and never rebuilt.
+        self.max_latency = float(self.gps_latency if max_latency_s is None else max_latency_s)
+        self._cap = None                               # ring length in steps (fixed)
         self.acc = {k: z(n) for k in self.periods}      # time since last epoch [s]
         self.age = {k: z(n) for k in self.periods}      # time since last sample [s]
         self.gyro_bias = z(n)                          # deg/s, per episode
@@ -139,8 +146,17 @@ class SensorModel:
         self.reset()
 
     # ------------------------------------------------------------------ public API
-    def reset(self, env_ids: torch.Tensor | None = None) -> None:
-        """New episode: redraw gyro/mag biases for `env_ids` and drop all samples."""
+    def reset(self, env_ids: torch.Tensor | None = None,
+              pos=None, heading=None) -> None:
+        """New episode: redraw gyro/mag biases for `env_ids` and drop all samples.
+
+        `pos` (true ENU position [m], shape `[2]` or `[k, 2]`) and `heading` (true
+        yaw, radians like `state[:, 2]`, scalar or `[k]`) seed `pos_hat`, `gps_enu`,
+        the fused `heading` and **every** delay slot of that env's GPS ring with the
+        spawn pose, so the first fixes of the episode report where the vessel
+        actually is instead of the ENU origin. Omitting both is bit-identical to the
+        old zero-start reset.
+        """
         idx = slice(None) if env_ids is None else env_ids
         k = self.num_envs if env_ids is None else int(env_ids.numel())
         sgn = lambda *s: torch.empty(*s, device=self.device, dtype=self.dtype).uniform_(-1.0, 1.0)  # noqa: E731
@@ -163,6 +179,20 @@ class SensorModel:
         self.mag_init[idx] = False
         if self._buf is not None:
             self._buf[idx] = 0.0
+        if pos is not None:
+            p = torch.as_tensor(pos, device=self.device, dtype=self.dtype).reshape(-1, 2)
+            if p.shape[0] not in (1, k):
+                raise ValueError(f"pos needs 1 or {k} rows, got {p.shape[0]}")
+            p = p.expand(k, 2)
+            self.pos_hat[idx] = p
+            self.gps_enu[idx] = p
+            if self._buf is not None:
+                self._buf[idx] = p.unsqueeze(1)        # every delay slot = spawn pose
+        if heading is not None:
+            h = torch.as_tensor(heading, device=self.device, dtype=self.dtype).reshape(-1)
+            if h.numel() not in (1, k):
+                raise ValueError(f"heading needs 1 or {k} values, got {h.numel()}")
+            self.heading[idx] = _wrap180(torch.rad2deg(h.expand(k)))
 
     def set_noise(self, env_ids=None, pos_noise_m=None, vel_noise_mps=None,
                   cog_noise_deg=None, gyro_noise_dps=None, gyro_bias_dps=None,
@@ -200,12 +230,16 @@ class SensorModel:
         pos = true_state[:, :2]
 
         # ---- GPS latency: one rolling window of past true positions (col 0 = now,
-        # col j = j steps ago) with a PER-ENV delay index; the window holds the batch
-        # maximum lag, so a slow env does not force a longer queue on the others.
-        lag_i = torch.round(self.latency_env / dt).long().clamp(1, 1024)   # steps
-        lag = int(lag_i.max())
-        if self._buf is None or self._buf.shape != (n, lag + 1, 2):
-            self._buf = pos.unsqueeze(1).repeat(1, lag + 1, 1)
+        # col j = j steps ago) with a PER-ENV delay index. Its length is fixed on the
+        # first step from the largest latency any env can ever draw, so no reset can
+        # reallocate it and wipe another env's history.
+        if self._cap is None:
+            worst = max(self.max_latency, float(self.latency_env.max()))
+            self._cap = int(min(1024, max(1, round(worst / dt))))          # steps
+        cap = self._cap
+        lag_i = torch.round(self.latency_env / dt).long().clamp(1, cap)    # steps
+        if self._buf is None or self._buf.shape != (n, cap + 1, 2):
+            self._buf = pos.unsqueeze(1).repeat(1, cap + 1, 1)
         else:
             self._buf = torch.roll(self._buf, shifts=1, dims=1)
             self._buf[:, 0] = pos

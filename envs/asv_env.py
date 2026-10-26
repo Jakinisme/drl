@@ -157,21 +157,24 @@ class AsvEnv:
         self.r_weak_prob = float(rd["weak_thruster_prob"])
         self.weak_frac = float(rd.get("weak_factor", 0.6))
         self.r_noise = float(rd["sensor_noise"])
-        self.r_bias_deg = float(rd["sensor_bias_deg"])
         self.r_latency = float(rd["sensor_latency_s"])
+        # one source of truth for the magnetometer bias bound: sensors.yaml `mag.bias_deg`
+        # (CONTRACT §3.3); env.yaml `sensor_bias_deg` is no longer read (reports/R3.md §3)
         # all ranges 0 -> "randomisation off": skip every draw and keep the nominal
         # yaml parameters (see reports/R2.md §3)
         self.randomize = any(v != 0.0 for v in (
             self.r_mass, self.r_inertia, self.r_drag, self.r_gain, self.r_lag,
-            self.r_db, self.r_asym, self.r_weak_prob, self.r_noise,
-            self.r_bias_deg, self.r_latency))
+            self.r_db, self.r_asym, self.r_weak_prob, self.r_noise, self.r_latency))
 
         self.dynamics = Dynamics(self.vehicle, self.num_envs, device=dev, dtype=dtype, dt=self.dt)
         self.thrusters = ThrusterModel(self.vehicle, self.num_envs, device=dev, dtype=dtype)
         self.disturbance = Disturbance(disturbance_cfg or load_disturbance_cfg(),
                                       self.num_envs, device=dev, dtype=dtype)
-        self.sensors = SensorModel(sensors_cfg or load_sensors_cfg(),
-                                   self.num_envs, device=dev, dtype=dtype)
+        sen_cfg = sensors_cfg or load_sensors_cfg()
+        self.sensors = SensorModel(sen_cfg, self.num_envs, device=dev, dtype=dtype,
+                                   # largest latency a draw can reach -> the GPS ring is
+                                   # sized once and never reallocated (reports/R3.md §2)
+                                   max_latency_s=float(sen_cfg["gps"]["latency_s"]) + self.r_latency)
 
         # nominal copies the randomisation is drawn around
         self.sf0 = self.thrusters.nominal["scale_fwd"].clone()
@@ -183,6 +186,7 @@ class AsvEnv:
                              ("gps_pos_sigma", "gps_vel_sigma", "gps_cog_sigma",
                               "gyro_sigma", "mag_sigma")}
         self._gyro_bias0 = float(sen.gyro_bias_max)
+        self._mag_bias0 = float(sen.mag_bias_max)    # sensors.yaml mag.bias_deg, the one source
         self._latency0 = float(sen.gps_latency)
 
         cur = self.disturbance.cfg.get("curriculum", {}) or {}
@@ -278,7 +282,7 @@ class AsvEnv:
         if self.randomize:
             self._randomize(idx, k)
             self._sensor_randomization(idx, k)
-        self.sensors.reset(idx)
+        self.sensors.reset(idx, pos=self.state[idx, :2], heading=self.state[idx, 2])
         self.ep_step[idx] = 0
         self.prev_action[idx] = 0.0
 
@@ -294,8 +298,8 @@ class AsvEnv:
         ms = 1.0 + self._unif(k) * self.r_mass
         is_ = 1.0 + self._unif(k) * self.r_inertia
         ds = 1.0 + self._unif(k) * self.r_drag
-        # set_params couples mass_scale into the linear/quadratic drag of surge/sway
-        # (see reports/R2.md §2 for the per-axis factors and the change vs the old writer)
+        # independent factors: mass_scale -> M(x,y), drag_scale -> D_lin/D_quad only
+        # (reports/R3.md §4; the R2.md §2 coupling is gone)
         self.dynamics.set_params(idx, mass_scale=ms, inertia_scale=is_, drag_scale=ds)
 
         sf = self.sf0.unsqueeze(0) * (1.0 + self._unif(k, 4) * self.r_gain)
@@ -323,7 +327,7 @@ class AsvEnv:
             gyro_noise_dps=b["gyro_sigma"] * f,
             mag_noise_deg=b["mag_sigma"] * f,
             gyro_bias_dps=self._gyro_bias0 * (1.0 + self._unif(k) * self.r_noise),
-            mag_bias_deg=self.r_bias_deg * (1.0 + self._unif(k) * self.r_noise),
+            mag_bias_deg=self._mag_bias0 * (1.0 + self._unif(k) * self.r_noise),
             gps_latency_s=(self._latency0 + self._unif(k) * self.r_latency).clamp(min=0.0),
         )
 
