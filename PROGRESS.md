@@ -281,5 +281,114 @@ stale-fix timer inside the wrapper would fight the sensor model. Suite re-run af
 
 ---
 
+## Wave 2 — Environment, Trainer, Metrics (B1, B2, B3) — DONE 2026-10-26
+
+Test command, real output:
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+129 passed, 14 warnings in 33.77s
+```
+
+| File | Lines | Owner | Content |
+|---|---|---|---|
+| `envs/asv_env.py` | 466 | B1 | vectorised env: dt 0.02, policy 10 Hz, obs + K=10 ring buffer, action-rate limit, reward terms, episodes (waypoints + station keeping), geofence/timeout, domain randomisation, curriculum, `est["t"]` clock |
+| `configs/env.yaml` | 59 | B1 | every reward weight + randomisation range (no magic numbers in code) |
+| `models.py` | 145 | B2 | `PolicyNet` 88,583 params, `forward → (mean, value, std)`, normalisation baked in, 1.08 MB checkpoint |
+| `train.py` | 326 | B2 | compact PPO: GAE, clip, minibatches, entropy, lr anneal, TensorBoard, checkpoint + `--resume`, CLI overrides |
+| `configs/train.yaml` | 43 | B2 | all hyperparameters |
+| `evalkit/metrics.py` | 167 | B3 | mean/p95 radial error, cross-track RMSE, settling time, energy, action rate (CONTRACT §4.9 signatures, numpy **or** torch input) |
+| `evalkit/plots.py` | 104 | B3 | the only matplotlib import (`Agg`), writes PNG via `out=` |
+| `tests/test_env.py` / `test_obs_parity.py` | 235 / 143 | B1 | 17 + 5 tests |
+| `tests/test_train_smoke.py` | 175 | B2 | 6 tests, dummy env per CONTRACT §4.5, CPU |
+| `tests/test_metrics.py` | 232 | B3 | hand-computable synthetic trajectories |
+| `reports/B1.md`, `B2.md`, `B3.md` | 150 + 181 + 98 | | per-agent reports |
+
+### Verified independently on disk (not taken from the reports)
+
+- Suite green at **129 passed**; the 79 Wave-1 tests are untouched.
+- `tests/test_obs_parity.py` really imports `runtime.obs_np` (`raw_sample`, `normalize`,
+  `ObsBuilder`, `K_HISTORY`, `RAW_DIM`) and compares it with `raw_sample_torch` — max |Δ| ≤ 1e-5
+  over all 150 observation components. `runtime/obs_np.py` was not modified.
+- `evalkit.metrics` imports neither matplotlib nor torch (`sys.modules` check run directly);
+  the matplotlib mention in that file is a comment.
+- Deadband for scoring is the ESP32 one: `0.03` base from `sim/thrusters.py:deadband0`,
+  randomised per env, **no 0.05 anywhere** in the env.
+- `est["t"]` = `env.t_loop`, a control-loop monotonic clock, not reset per episode
+  (`envs/asv_env.py:213,403,426`), with a test asserting `now − est["t"] ≤ watchdog_s` — the
+  runtime watchdog of `runtime/policy.py` cannot trip spuriously.
+
+### Measured numbers
+
+- B1 performance: 2048 envs → **53 ms/step** (≈19.4 policy steps/s), VRAM 12 MB. The sensor
+  model is ~40 % of the step time because `sim/sensors.py` converts lat/lon on the CPU.
+- B2: **24,281 env-steps/s** at 2048 envs × 32 steps, peak **200 MiB reserved / 161 MiB
+  allocated** of the 6 GB card (~3 %). Dummy-env reward rose over the smoke iterations;
+  checkpoint round-trips bit-exact.
+- B3: p95 by linear interpolation; settling = last entry into the band + `hold_s` guard;
+  action rate = total variation per second.
+
+### rsl_rl decision (B2, verified again here)
+
+`rsl_rl` is absent (`find_spec → None`); `pip install --dry-run rsl-rl-lib` resolves to
+`rsl-rl-lib 5.5.1` **plus torch-2.14.1**, which would replace the working
+torch 2.6.0+cu124. Nothing was installed. The compact PPO of CONTRACT §3.5 is what runs.
+
+### Orchestrator fix
+
+`.gitignore` gained `runs/` (B2's default `log_dir` / `ckpt_dir`, flagged by the agent but
+outside its Owns list).
+
+### Open issues carried forward
+
+1. **`sim/dynamics.py:set_params` takes `float()` only** — per-env mass/inertia/drag
+   randomisation is currently the same scalar for the whole batch. B1 worked around it
+   (batch-wide); a real per-env randomisation needs a small edit to `set_params`.
+2. **`sim/sensors.py` has no per-env noise/latency hooks** — those knobs are batch-wide, so
+   sensor domain randomisation is coarser than the thruster one.
+3. **Sensor model dominates step time** (~40 %) due to the per-step CPU lat/lon conversion.
+   Fix before the full curriculum (torch-side ENU→lat/lon, or compute on GPS epochs only).
+4. **No trained checkpoint exists** — `evaluate.py`/`export_onnx.py` (Wave 4) are unproven
+   against a real policy; the smoke test only shows the loop runs and reward does not NaN.
+5. Tuning still placeholder: geofence radius, acceptance radius, all reward weights (T7/T8),
+   metric tolerance 1.0 m, energy reported in normalised units until per-motor `max_thrust`
+   scaling is decided (Wave 4).
+6. Curriculum is driven inside the env (`set_curriculum`); `train.py` has no curriculum hook —
+   fine for now, must be settled before the long run.
+
+**Status: Wave 2 complete — 129 passed. Gate: stopping here for review before Wave 3.**
+
+---
+
+## Fix unit R1 — per-env randomisation (dynamics + sensors) — DONE 2026-10-26
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+135 passed, 14 warnings in 35.10s
+```
+
+- `sim/dynamics.py`: `set_params` now takes per-env `[N]` tensors (scalar still accepted,
+  `None` = nominal) and gained `quad_drag_scale`; two envs in one batch can differ in
+  mass/inertia/linear+quadratic drag.
+- `sim/sensors.py`: new `set_noise(env_ids, pos_noise_m=, vel_noise_mps=, cog_noise_deg=,
+  gyro_noise_dps=, gyro_bias_dps=, mag_noise_deg=, mag_bias_deg=, gps_latency_s=)` stored as
+  per-env tensors. Per-env latency uses **one** `[N, L+1, 2]` ring with `L = max_i
+  round(latency_i/dt)` (capped 1024 steps) read through a single `torch.gather` — no Python
+  loop, ~0.5 MB at 2048 envs.
+- `tests/test_randomization.py` (6 tests): differing mass/drag proven through the numeric
+  response of `step()`, differing noise/latency through statistics and delay, and the
+  non-randomised path proven **bit-identical** against `float.hex()` snapshots taken before
+  the change (`torch.equal`).
+- `envs/asv_env.py` was not touched (mtime unchanged). Six required call-site edits are
+  tabulated in `reports/R1.md` §3, with current call → replacement text.
+- Known limits stated by the agent: latency stays quantised to whole steps with a 1-step
+  floor (`latency_s = 0` ≠ zero delay, pre-existing), and GPS *rate* is still not randomised
+  — only noise, bias bounds and latency.
+
+**Status: R1 done — 135 passed. Still stopped at the Wave 2 gate; the env edits above are
+B1's to make before any training run.**
+
+---
+
 **Nothing here was validated against the real vessel.** All numbers above are from
 commands run on the dev box; the physical model is placeholder-parameterised throughout.
