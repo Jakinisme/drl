@@ -96,5 +96,190 @@ Test result: `py -3.13 -m pytest tests -q` → **17 passed in 0.13s**.
    real mag/IMU mounting rotation (H1–H3), hull sense of yaw/sway (H6), NEO-M8N NMEA
    output rate, declination for the operating site.
 
-**Status: Wave 0 complete, stopped at the gate.** Nothing claimed about real-vessel
-behaviour; all numbers above are from the code and from commands run on the dev box.
+---
+
+## Environment setup — drl/.venv — DONE 2026-10-26
+
+Decision: project-local venv (nothing installed globally, the broken global torch tree
+is left untouched and still unused). Every python/pytest run from here on uses
+`drl\.venv\Scripts\python.exe`. Full pip output: `drl/install.log` (gitignored, with
+`.venv/`, `__pycache__/`, `*.pyc`, `.pytest_cache/`).
+
+```
+py -3.13 -m venv .venv                                  # Python 3.13.3, pip 26.2.2
+.venv\Scripts\python.exe -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+.venv\Scripts\python.exe -m pip install numpy==2.2.6 PyYAML==6.0.3 pytest==9.1.1 \
+    onnxruntime==1.20.1 tensorboard==2.18.0 matplotlib==3.9.2
+.venv\Scripts\python.exe -m pip install --only-binary=:all: onnx
+```
+
+Verified:
+
+```
+torch 2.6.0+cu124  cuda True  cuda_ver 12.4  gpu NVIDIA GeForce RTX 3050
+numpy 2.2.6  yaml 6.0.3  pytest 9.1.1
+onnx 1.23.2  ort 1.20.1  tb 2.18.0  mpl 3.9.2
+cuda tensor op: (torch.zeros(4, device='cuda')+1).sum() -> 4.0
+.venv\Scripts\python.exe -m pytest tests -q -> 17 passed
+```
+
+Two deviations from the literal instruction, both forced:
+
+1. **`onnx==1.17.0` does not exist for cp313** — no wheel, pip fell back to a source
+   build that died at `CMake Error: CMAKE_C_COMPILER not set`. Installed the latest
+   binary wheel instead: **onnx 1.23.2**.
+2. **rsl-rl-lib NOT installed.** `pip install --dry-run rsl-rl-lib` resolves to
+   `torch-2.14.1` plus `tensordict`, `onnxscript`, `onnx-ir`, `sympy 1.14` — it would
+   replace torch 2.6.0+cu124, which the rule forbids. `train.py` (B2) therefore
+   implements the compact PPO already specified in CONTRACT.md §3.5.
+
+`requirements.txt` updated to the measured pins (it still said `onnx==1.17.0` and
+described torch as broken).
+
+---
+
+---
+
+## Wave 1 — batch 1 (A1 Physics, A2 Disturbance + Sensors) — DONE 2026-10-26
+
+Test command (all runs from `E:\buoy-project\drl`, venv only):
+
+```
+.venv/Scripts/python.exe -m pytest tests -q     ->  52 passed in 25.77s
+```
+
+| File | Lines | Owner | Content |
+|---|---|---|---|
+| `sim/thrusters.py` | 136 | A1 | mixing (firmware matrix verbatim), `MOTOR_INVERT`, ESP32 deadband 0.03 per motor, first-order lag, fwd/rev asymmetry, body wrench, per-env gains |
+| `sim/dynamics.py` | 135 | A1 | 3-DOF Fossen, diagonal `M_eff`, linear+quadratic drag, Coriolis, semi-implicit Euler with implicit linear drag |
+| `configs/vehicle.yaml` | 50 | A1 | all CONTRACT §3.1 keys + `signs` block, every physical value `TODO SYSID` |
+| `SYSID.md` | 238 | A1 | identification experiments B1–B13 for every placeholder |
+| `sim/disturbance.py` | 195 | A2 | wind (quadratic, relative), current (relative-flow drag), multi-sinusoid waves, `level`-scaled, seeded |
+| `sim/sensors.py` | 264 | A2 | GPS rate/latency/hold/staleness, IMU gyro + bias, mag + bias, complementary heading fusion, position LPF |
+| `common/estimator.py` | 103 | A2 | `estimate_body_velocity`, arithmetic-only, numpy **and** torch (series cos/sin) |
+| `configs/disturbance.yaml`, `configs/sensors.yaml` | 31 + 35 | A2 | CONTRACT §3.2/§3.3 keys |
+| `tests/test_{thrusters,dynamics,disturbance,sensors,estimator,frames}.py` | 8+8+8+8+3+17 | A1/A2 | 52 tests total |
+| `reports/A1.md`, `reports/A2.md` | 107 + 121 | A1/A2 | per-agent reports, open issues |
+
+### Behaviour verified by the suite
+
+- `mix_matrix`/`motor_invert` equal `config.h` (parsed from the C file when present); NE
+  inverted; deadband 0.03 on the **mixed motor** command (Pi's 0.05 not modelled);
+  per-motor saturation; lag reaches target; fwd/rev ratio = `max_fwd/max_rev × scale`;
+  command → wrench map is rank 3.
+- Free decay monotone, steady state equals the drag balance, `psi` wrapped, surge at
+  `psi=0` moves north, sway moves east, `step()` differentiable in `tau`, stable at large
+  `D_lin·dt`, batch shapes.
+- Disturbance: `level=0` bit-exact zero (both dtypes, 200 steps), RMS monotone in level,
+  same seed reproducible, `reset(env_ids)` touches only those rows, stateless in `t`/`dt`
+  except wave phase.
+- Sensors: keys/shapes/dtypes per CONTRACT §4.4, noise std matches config, zero-noise
+  reproduces truth, 5 Hz epoch + hold, heading stays in `[-180,180)`, stale fix →
+  `gps_valid=False` and decayed (not snapped) `u`, no NaN over 500 steps.
+- Estimator: numpy vs torch agree to 1e-6, module AST has no imports and no `isinstance`.
+
+### Corrections the orchestrator made on top of the agents
+
+1. **`thrust_dir` regression reverted.** A1 re-paired the four props (NW with SE, NE with
+   SW) to stop pure sway summing to zero. That made `cmd → wrench` **rank 2**: pure surge
+   and pure sway produced the *identical* wrench (measured: both `[19.05, -8.66, ±1.30]`),
+   i.e. a sim the policy cannot steer sideways. `configs/vehicle.yaml` is back to the
+   CONTRACT §3.1 geometry (all props `x > 0`, NW/SW port, NE/SE starboard) and the test is
+   now `test_body_axes_are_independent`: rank 3, yaw command dominates its own moment,
+   surge and sway push oppositely sideways. A1's 8 tests otherwise kept unchanged.
+2. `requirements.txt` (onnx pin) and `.gitignore` were already fixed during setup.
+
+### Open issues carried forward
+
+1. **A1-1: does `MOTOR_INVERT[NE]` double-count?** If the flag already cancels a reversed
+   prop, applying it again to the force direction mirrors one corner. Bench test
+   `SYSID.md B8` (thrust stand, pure surge, measure NE's force direction).
+2. **A1-2: every axis couples.** MIX sway column `[+,-,-,+]` + NE invert = three motors
+   forward, one reverse → surge ≈ 15 N against sway ≈ 7 N for a full sway command. This is
+   what the firmware describes; the env/controller must live with it, not "fix" it.
+3. **H6 unresolved**: physical sense of `+sway`/`+yaw` on the hull; `signs.*` are bench-only,
+   `SYSID.md B7`.
+4. **`sim/sensors.py` calls `enu_to_latlon` on the host every step** (`cpu().double().numpy()`),
+   one sync per step. Fine at small `num_envs`, must be revisited before 2048-env training.
+5. No physical constant, noise level or disturbance magnitude is measured — everything is
+   `TODO SYSID`. No sim number here says anything about the real vessel.
+
+### Process note (provider)
+
+The sub-agent provider failed repeatedly (`HTTP 502` / `model_disabled`, "Out of stock"):
+5 child runs died mid-task, twice after writing nothing. Files that did land were written
+before the crash, so the wave was recovered from disk plus inline work (thrusters,
+dynamics and their tests were written by the orchestrator when A1 had produced nothing).
+Sub-agent reports kept as `reports/A1.md`, `reports/A2.md`.
+
+**Status: batch 1 complete, 52 passed. Next: A3 PID baseline + A4 runtime.**
+
+---
+
+## Wave 1 — batch 2 (A3 PID baseline, A4 runtime) — DONE 2026-10-26
+
+Test command, real output:
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+79 passed in 24.56s
+```
+
+| File | Lines | Owner | Content |
+|---|---|---|---|
+| `baseline_pid.py` | 191 | A3 | `PIDBaseline`, batched torch, CONTRACT §4.6 interface (`act`/`reset`), rad + ENU (not the Pi's degrees) |
+| `tests/test_pid_parity.py` | 343 | A3 | 7 tests: 4 parity vs the real `thrust.py`, closed-loop toy plant |
+| `runtime/obs_np.py` | 146 | A4a | numpy observation builder, CONTRACT §5 layout, K=10 history, no torch |
+| `runtime/policy.py` | 237 | A4a | `RLController.step()`, onnxruntime only, safety wrapper (clip → slew → geofence/watchdog/fault fallback) |
+| `runtime/infer_replay.py` | 159 | A4b | offline CSV replay with argparse, prints step count + action range + fault counters |
+| `tests/test_runtime.py` | 439 | A4b | 20 tests, dummy ONNX built with `onnx.helper` (no torch) |
+| `reports/A3.md`, `reports/A4a.md`, `reports/A4b.md` | 176 + 120 + 117 | | per-agent reports |
+
+### What the 20 new tests actually show
+
+- Observation builder: CONTRACT §5 layout, history K=10 oldest-first, deterministic.
+- Controller: model is really invoked, action in `[-1,1]`, slew limit `2.0/s · dt` = **0.2 per step at dt = 0.1 s** (A4a's report said 0.1 — that is the 20 Hz figure; **code is right, report was wrong**).
+- Faults: `gps_valid=False`, `sensor_ok=False`, watchdog (stale sample and inter-call gap), NaN action → fallback path (slew-limited, not a step); the legacy `has_fix` flag is **ignored**, per the human's decision.
+- Geofence 80 m → zero command. History resets on episode change.
+- `infer_replay.py` runs as a subprocess on a temp CSV, exit 0, reports `fallback=2 gps=1 watchdog=1`.
+- `import runtime.policy / obs_np / infer_replay` leaves `torch` out of `sys.modules` (checked directly).
+
+### PID parity (A3, measured)
+
+Parity against the real `pi-control/src/control/thrust.py` with its hardware imports stubbed
+and the compute path untouched: **max deviation 3.0e-7** at atol 1e-4, including an 8-step
+integrator/derivative trace with a frozen clock. Closed-loop toy plant: station keeping
+settles at 0.688 m (= 0.5·√2, the DP deadband corner), waypoint 23.6 m reached inside 2 m at
+33.3 s.
+
+### Orchestrator fix on top of the agents
+
+`runtime/policy.py:DEFAULT_SAFETY` carried a `gps_timeout_s` key that no code path read
+(A4b reported it, did not change it). Removed, with a comment stating why: GPS loss is
+communicated by the caller's `gps_valid` / `sensor_ok` flags (CONTRACT §4.4), and a second
+stale-fix timer inside the wrapper would fight the sensor model. Suite re-run after the edit:
+79 passed.
+
+### Open issues carried into Wave 2/4
+
+1. **`est["t"]` semantics must be pinned in the Pi glue.** If it is the GPS fix time (1 Hz by
+   default) and not the control-loop time, the 0.5 s watchdog will trip permanently and the
+   policy will run on the fallback path forever. Wave 4 must define it.
+2. **PID baseline's `output_deadband` (0.05) is the Pi convenience, not the actuator.**
+   `sim/thrusters.py` owns the real 0.03 per mixed motor. Wave 3/4 must state which is used
+   for scoring the baseline, or the comparison is biased against the PID.
+3. **A3 suspects inherited from `thrust.py`, unfixed by design:** per-axis 0.5 m DP deadband
+   caps station keeping at 0.707 m; derivative kick (~6·err) on the first step after a reset;
+   `speed_norm` is a no-op; H1 (heading sign) inherited.
+4. **`infer_replay` fallback emits zeros**, while `baseline_pid` offers a batched `act()`.
+   Wiring the real PID as the runtime fallback is Wave 4 work.
+5. **CSV schema in `infer_replay` is a proposal** — no logger writes it yet.
+6. No trained model exists: every runtime number above is plumbing on a dummy ONNX graph.
+   Nothing here says anything about control quality, and nothing transfers to the vessel.
+
+**Status: Wave 1 complete — 79 passed. Gate: stopping here for review before Wave 2.**
+
+---
+
+**Nothing here was validated against the real vessel.** All numbers above are from
+commands run on the dev box; the physical model is placeholder-parameterised throughout.

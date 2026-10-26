@@ -1,0 +1,35 @@
+# Sensor + estimator config — owner: A2 (sim/sensors.py). CONTRACT.md §3.3.
+# Rates marked (measured) come from INSPECTION.md §3 (Pi code + log). Everything
+# marked TODO is a placeholder: no sensor noise was ever logged on the vessel.
+
+gps:
+  rate_hz: 5.0              # NEO-M8N default NMEA rate is 1 Hz (INSPECTION §3 TODO);
+                            # 5 Hz assumed so the first tests are not fix-starved
+  pos_noise_m: 0.4          # TODO: 1-sigma horizontal position noise [m]
+  vel_noise_mps: 0.05       # TODO: 1-sigma SOG noise [m/s]
+  cog_noise_deg: 3.0        # TODO: 1-sigma COG noise [deg]
+  latency_s: 0.2            # TODO: fix-to-Pi transport + parse delay [s]
+  hold_last: true           # repeat the last fix between epochs (real receiver does)
+  stale_after_s: 2.0        # config.py:17 GPS staleness timeout (measured)
+  origin_lat: null          # TODO: null -> fallback 0.0 in sim; runtime uses first fix
+  origin_lon: null          # TODO
+
+imu:
+  rate_hz: 50.0             # (measured) config.py:24, imu.py:254
+  gyro_noise_dps: 0.3       # TODO: 1-sigma gyro rate noise [deg/s]
+  gyro_bias_dps: 0.2        # TODO: max |bias| drawn per episode [deg/s]
+  accel_noise_mps2: 0.05    # TODO: unused by the 3-DOF sim (kept for the interface)
+  stale_after_s: 0.5        # TODO
+
+mag:
+  rate_hz: 15.0             # (measured) config.py:29, magnetometer.py:289
+  noise_deg: 2.0            # TODO: 1-sigma heading noise [deg]
+  bias_deg: 5.0             # TODO: max |magnetic bias| drawn per episode [deg]
+  stale_after_s: 1.0        # TODO
+
+estimator:
+  type: complementary       # structure of fusion.py: mag-primary + gyro propagation
+  mag_weight: 0.02          # fusion.py:54 (measured)
+  gyro_weight: 0.98         # fusion.py:54 (measured)
+  gps_alpha: 0.7            # config.py:38-40 position low-pass (measured)
+  gps_heading_min_speed_mps: 0.3   # GPS course used for heading only above this speed

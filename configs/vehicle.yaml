@@ -1,0 +1,50 @@
+# configs/vehicle.yaml — ASV catamaran, 4x A2212 in 45-degree X, 3-DOF
+#
+# EVERY number here is an unmeasured placeholder. The only values taken from the
+# vessel are mix_matrix / motor_invert / deadband, which come verbatim from
+# firmware-esp/src/header/config.h. Identification experiments: SYSID.md.
+
+mass_kg: 12.0                 # TODO SYSID
+inertia_izz_kgm2: 1.2         # TODO SYSID
+added_mass: {x: 3.0, y: 8.0, n: 0.6}          # TODO SYSID, kg / kg*m^2
+drag_linear: {x: 6.0, y: 18.0, n: 1.5}        # TODO SYSID, N/(m/s), N*m/(rad/s)
+drag_quadratic: {x: 4.0, y: 12.0, n: 0.8}     # TODO SYSID, N/(m/s)^2
+max_surge_mps: 1.0            # soft cap, reward/obs scaling only
+
+thrusters:
+  order: [NW, NE, SW, SE]     # MUST equal config.h MotorID order
+  positions_m:                # body frame [x_fwd, y_stbd] from CG
+    NW: [0.45, -0.30]         # TODO SYSID (NW = front-left)
+    NE: [0.45,  0.30]         # TODO SYSID
+    SW: [-0.45, -0.30]        # TODO SYSID
+    SE: [-0.45,  0.30]        # TODO SYSID
+  thrust_dir:                 # unit body-frame direction of each prop's thrust
+    NW: [0.707, -0.707]       # TODO SYSID — INSPECTION H6
+    NE: [0.707,  0.707]       # TODO SYSID — INSPECTION H6
+    SW: [0.707, -0.707]       # TODO SYSID — INSPECTION H6
+    SE: [0.707,  0.707]       # TODO SYSID — INSPECTION H6
+    # 45-degree X mount: every prop pushes forward-ish (x > 0), NW/SW to port and
+    # NE/SE to starboard. Do NOT "fix" this into diagonal pairs: pairing NW with SE
+    # collapses the cmd -> wrench map to rank 2 (surge and sway produce the same
+    # wrench), which is an uncontrollable sim. See tests/test_thrusters.py
+    # test_body_axes_are_independent and reports/A1.md open issues 1-2.
+  max_thrust_fwd_n: 9.8       # TODO SYSID bollard pull per motor
+  max_thrust_rev_n: 4.9       # TODO SYSID (assumed ~half of forward)
+  deadband: 0.03              # config.h:110 MOTOR_DEADZONE (measured fact, ESP32 level)
+  lag_tau_s: 0.12             # TODO SYSID first-order motor lag
+  mix_matrix:                 # config.h:85-90 verbatim, rows NW,NE,SW,SE / cols surge,sway,yaw
+    - [ 1.0,  1.0,  1.0]
+    - [ 1.0, -1.0, -1.0]
+    - [ 1.0, -1.0,  1.0]
+    - [ 1.0,  1.0, -1.0]
+  motor_invert: [false, true, false, false]   # config.h:100-105 verbatim (NE spins reversed)
+
+# Bench-unknown signs. Defaults are identity, i.e. the sim reproduces the firmware as
+# written. Flip ONE value at a time after the per-axis bench test (SYSID.md experiment
+# B2); nothing here may be treated as verified until that test is recorded.
+signs:
+  sway_sign: 1.0              # TODO belum diverifikasi bench
+  yaw_sign: 1.0               # TODO belum diverifikasi bench
+  motor_sign: {NW: 1.0, NE: 1.0, SW: 1.0, SE: 1.0}          # TODO belum diverifikasi bench
+  thrust_scale_fwd: {NW: 1.0, NE: 1.0, SW: 1.0, SE: 1.0}    # TODO belum diverifikasi bench
+  thrust_scale_rev: {NW: 0.5, NE: 0.5, SW: 0.5, SE: 0.5}    # TODO belum diverifikasi bench

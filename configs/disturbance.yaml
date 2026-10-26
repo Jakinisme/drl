@@ -1,0 +1,31 @@
+# Disturbance model config — owner: A2 (sim/disturbance.py). CONTRACT.md §3.2.
+# Every physical value below is a placeholder unless it comes from the repo.
+# TODO SYSID on the real vessel: wind drag area, current speed/direction per site,
+# wave force amplitudes. None of these have been measured.
+
+wind:
+  enabled: true
+  rho_air_kgm3: 1.225       # ISA at sea level (physical constant)
+  cd_area_m2: 0.35          # TODO SYSID: Cd * frontal area of hull + superstructure [m^2]
+  max_speed_mps: 8.0        # TODO: strongest wind the curriculum may sample [m/s]
+  # sampled per episode: speed ~ U(0, max_speed_mps), direction ~ U(0, 360) deg
+  # force = level^2 * 0.5 * rho * cd_area * |V_rel| * V_rel   (relative to hull speed)
+
+current:
+  enabled: true
+  speed_mps: 0.25           # TODO SYSID: site current, measured by drift test
+  direction_deg: 0.0        # TODO SYSID: current TOWARD this compass direction, 0 = north
+  drag_linear: 6.0          # TODO SYSID: N/(m/s) hull drag used for the current push
+
+waves:
+  enabled: true
+  n_components: 4
+  freq_hz: [0.15, 0.25, 0.4, 0.6]        # TODO SYSID: wave spectrum peaks at the site
+  amp_n: [2.0, 1.5, 1.0, 0.6]            # TODO SYSID: horizontal force amplitude [N]
+  yaw_amp_nm: [0.3, 0.2, 0.1, 0.05]      # TODO SYSID: yaw moment amplitude [N·m]
+
+curriculum:
+  n_levels: 6
+  scale_by_level: [0.0, 0.1, 0.25, 0.5, 0.75, 1.0]   # level 0 must be exact zero
+
+seed_offset: 0

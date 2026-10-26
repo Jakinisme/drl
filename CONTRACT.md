@@ -132,7 +132,18 @@ thrusters:
     - [ 1.0, -1.0,  1.0]
     - [ 1.0,  1.0, -1.0]
   motor_invert: [false, true, false, false]   # config.h:100-105 verbatim
+signs:                        # OWNER: A1. All TODO "belum diverifikasi bench" (INSPECTION H6)
+  sway_sign: 1.0              # TODO belum diverifikasi bench
+  yaw_sign: 1.0               # TODO belum diverifikasi bench
+  motor_sign: {NW: 1.0, NE: 1.0, SW: 1.0, SE: 1.0}          # TODO belum diverifikasi bench
+  thrust_scale_fwd: {NW: 1.0, NE: 1.0, SW: 1.0, SE: 1.0}    # TODO belum diverifikasi bench
+  thrust_scale_rev: {NW: 0.5, NE: 0.5, SW: 0.5, SE: 0.5}    # TODO belum diverifikasi bench
 ```
+
+The `signs` block exists so the bench test can flip a single sign instead of editing the
+firmware-derived matrix. Defaults are identity (`1.0`, and rev = 0.5 = the
+`max_thrust_rev_n / max_thrust_fwd_n` ratio), i.e. the sim reproduces the firmware as
+written. Every key carries the TODO marker `belum diverifikasi bench`.
 
 `mix_matrix` and `motor_invert` are **verbatim from firmware** and must never be
 "corrected" here; INSPECTION.md H6 explains why the physical sign of sway/yaw is still
@@ -286,11 +297,26 @@ class ThrusterModel:
     def step(self, cmd: Tensor[N, 3], dt: float) -> Tensor[N, 3]: ...  # applies lag
 ```
 
-Per motor: `m_i = flip_i · (MIX[i] · cmd)` (with `flip = +1` unless `motor_invert[i]`),
-deadband → 0, clamp ±1, first-order lag `dm/dt = (m_target − m)/lag_tau`, then
-`F_i = m_i ≥ 0 ? m_i·max_fwd : m_i·max_rev` (asymmetric), and
-`tau = Σ_i [ F_i·dir_i , (p_i × F_i·dir_i)_z ]` with `p_i` from `thrusters.positions_m`.
-Static randomisation knobs (`step` must honour per-env gains) are set by the env.
+Per motor, in this exact order:
+
+```
+cmd_eff       = cmd · [1, signs.sway_sign, signs.yaw_sign]          # bench-unknown signs
+m_i           = signs.motor_sign[i] · flip_i · (MIX[i] · cmd_eff)   # flip from motor_invert
+m_i           = 0 if |m_i| <= deadband else m_i                     # deadband 0.03 = ESP32 level
+m_target_i    = clamp(m_i, -1, +1)
+m_i          += (m_target_i - m_i)·dt/lag_tau                        # first-order lag
+F_i           = m_i >= 0 ? m_i·max_fwd·scale_fwd[i] : m_i·max_rev·scale_rev[i]
+tau           = Σ_i [ F_i·dir_i , (p_i × F_i·dir_i)_z ]              # p_i from positions_m
+```
+
+**Deadband is the ESP32 one (0.03 per mixed motor, `config.h:110`), never the Pi one.**
+`THRUST_DEADZONE = 0.05` in `config.py:84` is a Pi-side convenience that will be removed
+from the control path; modelling it would teach the policy to avoid small commands the
+hardware actually executes. `deadband` is also a domain-randomisation target (per-env
+value around 0.03), so the policy must tolerate a dead band it cannot see.
+
+Static randomisation knobs (`step` must honour per-env gains) are set by the env:
+`thrust_scale_fwd/rev`, `lag_tau`, `deadband`, and one weakened motor — CONTRACT §3.4.
 
 ### 4.3 `sim/disturbance.py`
 
@@ -470,6 +496,27 @@ def summarize(traj: dict) -> dict
 normalized-command units (dimensionless·s); if joule-equivalent numbers are wanted,
 multiply per-motor thrust² by `max_thrust**2` — **TODO** decide in Wave 4 and document
 in the results table.
+
+### 4.10 `common/estimator.py` (owner: A2 writes, A4 imports — single source of truth)
+
+The real vessel has no body velocity (INSPECTION H7). One implementation, used by both
+the sim sensor model and the Pi runtime, so there is no numpy/torch duplicate:
+
+```python
+def estimate_body_velocity(sog_mps, cog_deg, heading_deg, dt_s, u_prev, v_prev,
+                           gps_valid, min_speed_mps=0.3, decay_tau_s=1.0): ...
+    # returns (u, v), same shape/broadcast as the inputs
+```
+
+Semantics: `dg = wrap_deg(cog_deg - heading_deg)`; `u_new = sog·cos(dg)`,
+`v_new = sog·sin(dg)`; use them only where `gps_valid & (sog >= min_speed_mps)`;
+elsewhere first-order decay `x + (0 - x)·min(dt/decay_tau, 1)`. When `gps_valid` is
+false the previous estimate decays, it does not snap to zero.
+
+Hard constraint: **arithmetic operators only** — `+ - * /`, `abs`, `min`/`max` via
+comparison, `where`-style clamping written once for both backends. Plain numpy arrays and
+torch tensors must both work with the same code path (no `np.`/`torch.` calls inside, no
+`if isinstance`). `dt_s`, `min_speed_mps`, `decay_tau_s` are floats.
 
 ## 5. Observation layout
 

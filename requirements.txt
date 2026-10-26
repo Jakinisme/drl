@@ -1,42 +1,34 @@
 # drl/ training-side dependencies (Windows 11, Python 3.13, RTX 3050 6 GB)
-# Install with the py launcher that owns these packages:
-#   py -3.13 -m pip install -r requirements.txt
-# Verified state of this host is recorded in INSPECTION.md §8. Items marked
-# "NOT INSTALLED" are absent as of 2026-10-26; nothing here was installed by Wave 0.
+# Installed and verified inside drl/.venv on 2026-10-26 (see install.log,
+# INSPECTION.md §8). Always use the venv interpreter:
+#   drl\.venv\Scripts\python.exe -m pytest tests -q
+# Recreate from scratch:
+#   py -3.13 -m venv .venv
+#   .venv\Scripts\python.exe -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+# torch comes first: the cu124 wheel is only on the PyTorch index, the rest are on PyPI.
 
-# --- already present, versions measured -------------------------------------
+# --- measured in drl/.venv (installed, importable) ---------------------------
 numpy==2.2.6
 PyYAML==6.0.3
 pytest==9.1.1
 
-# --- torch: currently BROKEN on this host -----------------------------------
-# `import torch` fails with: ImportError: DLL load failed while importing _C
-# site-packages holds a partial torch 2.6.0+cu124 tree (torch/version.py) with
-# torch_cpu.dll / torch_cuda.dll missing, plus leftover ~orch, ~orchgen,
-# ~unctorch, ~orch-2.9.1.dist-info dirs. pip does not know about torch at all.
-# NOT INSTALLED (no valid metadata). Repair, when the human decides:
-#   py -3.13 -m pip uninstall -y torch torchvision
-#   py -3.13 -m pip install --force-reinstall torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
-# Keep this pin in sync with whatever ends up installed.
-torch==2.6.0+cu124
+# --- torch (installed from https://download.pytorch.org/whl/cu124) ----------
+torch==2.6.0+cu124        # cuda 12.4, torch.cuda.is_available() == True, RTX 3050
 
 # --- export / runtime parity ------------------------------------------------
-# NOT INSTALLED
-onnx==1.17.0
-# NOT INSTALLED  (CPU wheel is enough for the <1e-4 parity test on the dev box;
-# use onnxruntime-gpu only if inference speed on the dev box matters)
-onnxruntime==1.20.1
+onnx==1.23.2              # NOT 1.17.0: no cp313 wheel, source build fails (no CMake)
+onnxruntime==1.20.1       # CPU wheel; enough for the <1e-4 parity test on the dev box
 
 # --- logging / plots --------------------------------------------------------
-# NOT INSTALLED  (train.py logs to TensorBoard)
-tensorboard==2.18.0
-# NOT INSTALLED  (evalkit/plots.py)
-matplotlib==3.9.2
+tensorboard==2.18.0       # train.py logging
+matplotlib==3.9.2         # evalkit/plots.py
 
 # --- deliberately NOT used --------------------------------------------------
-# rsl_rl: NOT INSTALLED. train.py must check the installed API before wrapping it;
-# if it does not fit cleanly, use the built-in compact PPO (see CONTRACT.md §3.5).
-# rsl-rl-lib==2.2.4
+# rsl_rl: NOT installed — rsl-rl-lib 5.5.1 resolves to torch-2.14.1, i.e. it would
+# replace torch 2.6.0+cu124 (rejected). train.py implements the compact PPO of
+# CONTRACT.md §3.5 instead.
+# rsl-rl-lib==5.5.1
 #
 # gymnasium: NOT INSTALLED and not needed — envs/asv_env.py is a plain vectorized
 # torch env with reset()/step(), no Gym API (CONTRACT.md §4.5).

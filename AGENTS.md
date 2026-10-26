@@ -8,7 +8,10 @@ You are the ORCHESTRATOR. Use delegate_task. Run ONE wave at a time.
 3. You cannot ask the user. Unknown conventions or physical values -> TODO in the file and in your report. Never invent final values.
 4. If you find a bug in existing code (e.g. PID sign, angle averaging near 0/360 deg), report it; do not fix silently.
 5. Run your own tests with pytest and fix failures. Windows 11 compatible, SI units.
-6. Final report max 15 lines: files created, test results, assumptions/TODOs, open problems. Never claim sim results transfer to the real vessel.
+6. Final report max 5 lines: files created, test results, assumptions/TODOs, open problems. Long details go to drl/reports/<id>.md. Never claim sim results transfer to the real vessel.
+7. Read only the CONTRACT/TASK sections your role needs (use offset/limit). Never read whole files longer than 300 lines.
+8. Write one file per Write call. Run pytest only on your own test files.
+9. (Orchestrator) Up to 4 agents in parallel when units are independent. After each agent, verify files on disk and run its tests before marking it done; "completed" alone is not proof. On provider failure retry at most once, then do the file inline.
 
 ## Wave 0 (1 agent)
 ### A0 Inspector/Architect
