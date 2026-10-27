@@ -1,0 +1,5 @@
+FastEnv parity vs AsvEnv: obs 4.66 state 0 reward 0 dist 0 | step 207.6 ms -> 89.5 ms (3 envs, cuda)
+checkpoint E:\buoy-project\drl\runs\checkpoints\ckpt_last.pt steps=19988480 iteration=305 obs_mean|max|=0 obs_std=[1,1]
+E:\buoy-project\drl\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4653: RuntimeWarning: invalid value encountered in subtract
+  diff_b_a = subtract(b, a)
+  sk_wind      ppo seed     0 n_ep 8/8 radial  10.60 m p95  36.89 m settled  50.0% (107 s)

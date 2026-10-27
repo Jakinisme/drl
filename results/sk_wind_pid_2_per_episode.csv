@@ -1,0 +1,7 @@
+scenario,controller,seed,episode,env,n_samples,duration_s,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,action_rate,settled_pct,energy_j_proxy,n_episodes
+sk_wind,pid,2,0,0,1200,119.9,13.2566,30.965,33.4899,16.3228,inf,,215.924,1.65276,0,41474.6,
+sk_wind,pid,2,0,1,1200,119.9,55.8281,61.7136,62.4824,55.9578,inf,,143.378,1.21239,0,27540.1,
+sk_wind,pid,2,0,4,1200,119.9,32.9319,40.0787,40.4104,33.2875,inf,,140.965,1.18724,0,27076.6,
+sk_wind,pid,2,0,5,1200,119.9,39.9898,61.5054,64.3468,41.8298,inf,,274.668,0.708596,0,52758.2,
+sk_wind,pid,2,0,6,1200,119.9,4.93889,10.9561,14.3938,5.71748,inf,,244.445,1.05003,0,46953,
+sk_wind,pid,2,0,7,1200,119.9,10.5718,24.1588,26.6887,12.5379,inf,,262.637,0.798519,0,50447.3,

@@ -1,0 +1,3 @@
+scenario,controller,seed,episodes,n_episodes,n_envs,duration_s,wall_s,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,energy_j_proxy,action_rate,settled_pct
+sk_wind,ppo,0,1,4,4,119.9,77.1,8.70279,31.0628,33.6242,13.1931,inf,nan,168.884,32439.2,0.405322,25
+sk_wind,pid,10,1,3,4,119.9,81.3,34.857,48.9795,51.063,36.1944,inf,nan,213.106,40933.4,1.04786,33.3333

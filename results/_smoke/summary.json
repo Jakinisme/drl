@@ -1,0 +1,73 @@
+{
+ "ckpt": "E:\\buoy-project\\drl\\runs\\checkpoints\\ckpt_last.pt",
+ "steps": 19988480,
+ "iteration": 305,
+ "args": {
+  "ckpt": "E:\\buoy-project\\drl\\runs\\checkpoints\\ckpt_last.pt",
+  "envs": 4,
+  "episodes": 1,
+  "seed": 0,
+  "scenarios": "sk_wind",
+  "rough_scale": 2.0,
+  "square_side": 30.0,
+  "device": "cuda",
+  "out": "results/_smoke",
+  "no_plots": true,
+  "tol": 1.0,
+  "hold_s": 5.0
+ },
+ "fast_env_parity": {
+  "obs": 4.892074108123779,
+  "state": 0.0,
+  "reward": 0.0,
+  "dist": 0.0,
+  "ms_slow": 155.0379753112793,
+  "ms_fast": 66.09798073768616
+ },
+ "rows": [
+  {
+   "scenario": "sk_wind",
+   "controller": "ppo",
+   "seed": 0,
+   "episodes": 1,
+   "n_episodes": 4,
+   "n_envs": 4,
+   "duration_s": 119.9,
+   "wall_s": 77.1,
+   "target": "station keeping, 120 s, wind+current+waves at curriculum level 1.0",
+   "n_samples": 1200.0,
+   "radial_error_mean": 8.702786005579096,
+   "radial_error_p95": 31.062817646719427,
+   "radial_error_max": 33.62418971164033,
+   "cross_track_rmse": 13.193131548624782,
+   "settling_time_s": Infinity,
+   "settling_p95_s": NaN,
+   "energy": 168.88380966690622,
+   "action_rate": 0.4053224309575568,
+   "settled_pct": 25.0,
+   "energy_j_proxy": 32439.20216081935
+  },
+  {
+   "scenario": "sk_wind",
+   "controller": "pid",
+   "seed": 10,
+   "episodes": 1,
+   "n_episodes": 3,
+   "n_envs": 4,
+   "duration_s": 119.90000000000002,
+   "wall_s": 81.3,
+   "target": "station keeping, 120 s, wind+current+waves at curriculum level 1.0",
+   "n_samples": 1200.0,
+   "radial_error_mean": 34.85701600344503,
+   "radial_error_p95": 48.97949188455161,
+   "radial_error_max": 51.06301234438495,
+   "cross_track_rmse": 36.19444762060292,
+   "settling_time_s": Infinity,
+   "settling_p95_s": NaN,
+   "energy": 213.10595089591243,
+   "action_rate": 1.0478562716258681,
+   "settled_pct": 33.333333333333336,
+   "energy_j_proxy": 40933.39104808686
+  }
+ ]
+}

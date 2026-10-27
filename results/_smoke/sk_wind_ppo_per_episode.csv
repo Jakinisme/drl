@@ -1,0 +1,5 @@
+scenario,controller,episode,env,n_samples,duration_s,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,action_rate,settled_pct,energy_j_proxy,n_episodes
+sk_wind,ppo,0,0,1200,119.9,9.54798,32.7112,33.0275,13.7543,inf,,231.918,0.269698,0,44546.8,
+sk_wind,ppo,0,1,1200,119.9,5.21191,20.4726,23.8757,7.40234,inf,,185.733,0.382586,0,35675.6,
+sk_wind,ppo,0,2,1200,119.9,17.024,56.138,60.5228,25.7084,inf,,195.745,0.479272,0,37598.8,
+sk_wind,ppo,0,3,1200,119.9,3.02723,14.9294,17.0708,5.90745,33.4,,62.1388,0.489734,100,11935.6,

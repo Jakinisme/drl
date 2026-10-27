@@ -475,5 +475,169 @@ cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
 
 ---
 
+## Wave 3 — Integration smoke test (C1) — DONE 2026-10-26
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+148 passed, 14 warnings in 63.19s
+```
+
+Files: `tests/test_integration.py` (11,262 B, 5 tests), `INTEGRATION.md`, `reports/C1.md`,
+`reports/c1_train.log`, `reports/c1_pid.log`.
+
+### PPO smoke run — measured, not estimated
+
+Conditions: level 0 (no disturbance, no curriculum), seed 0, 1024 envs, 32-step rollout,
+compact PPO, cuda.
+
+| quantity | value |
+|---|---|
+| reward, iteration 0 | **+0.2079** |
+| reward, iteration 39 (last) | **+0.4811** (max +0.6531 at it 36; noisy, non-monotone) |
+| first-5-iter mean → last-5-iter mean | +0.2022 → +0.5327 |
+| return | 2.06 → 53.86 |
+| total steps | **1,310,720** |
+| wall time | **69.7 s** (18,817 steps/s) |
+| peak VRAM | **89.7 MiB allocated / 110.0 MiB reserved** of 6 GB |
+
+Reward rose; the curve is noisy, so this says the loop learns *something* in 1.3 M steps,
+nothing about control quality.
+
+### PID baseline inside the env — it does not converge (real finding)
+
+16 envs × 1200 policy steps = 120 s, level 0, physics randomisation off, seed 0:
+
+| scenario | radial mean | p95 | cross-track RMSE | settled | energy | action rate | error trend |
+|---|---|---|---|---|---|---|---|
+| station keeping | **45.54 m** | 93.96 m | 47.37 m | **0 %** | 272.4 | 1.416 /s | 40.03 → 48.39 m |
+| waypoint | **39.24 m** | 84.36 m | 25.12 m | **0 %** | 223.4 | 1.436 /s | 38.79 → 40.90 m |
+
+Cause found: **every body command produces the same surge force.** Measured independently
+here with nominal gains: `[1,0,0] → (19.05, −8.66, −1.30)`, `[0,1,0] → (19.05, +8.66, −6.50)`,
+`[0,0,1] → (19.05, −8.66, +6.50)` N / N·m. (C1's report quotes 17.32 N / ±10.39 / ±7.80 — a
+randomised-gain run; the qualitative result is identical.) Surge is coupled into sway and
+yaw on every command, the heading loop saturates and limit-cycles, and the PID — tuned for the
+real vessel — cannot close the loop in this sim. Root cause is the unmeasured
+`thrusters.thrust_dir` / `positions_m` (TODO SYSID, INSPECTION H6), not a controller bug.
+
+**Consequence for Wave 4:** a PID-vs-PPO table on this sim is not yet a fair comparison until
+the thruster geometry is either bench-identified or the coupling is acknowledged in the report.
+
+### Pins that C1 added (regression guards)
+
+1. Estimator error right after reset and after step 1: max **1.95 m** against a 23.0 m mean
+   spawn distance (asserted < 5 m) — the R3 pose seeding holds.
+2. Effective drag factor over 2000 sampled resets: min **0.7010**, max **1.2997** inside the
+   env.yaml drag range `[0.70, 1.30]`; mass-drag decoupling asserted too.
+
+### Fixes to earlier files (complete list, all from C1)
+
+- `train.py`: per-iteration stdout line, `--curriculum-level` flag, peak-VRAM print.
+- `tests/test_env.py::test_domain_randomization_ranges`: drag bound tightened to `r_drag`,
+  `D_quad` added (was loose after R3).
+- Nothing else was touched. Reward weights, geofence (80 m) and arrival radius (2.0 m) are
+  **unchanged and still open decisions** (T7/T8).
+
+### Open decisions the human must make before/with the full run
+
+1. **Reward weights** (`configs/env.yaml`, all seven) — placeholder, unvalidated.
+2. **Geofence 80 m and arrival radius 2.0 m** — placeholder (T8).
+3. **Observation clip ±5** hides position errors beyond ~50 m (10 m scale × 5), so a badly
+   lost episode looks the same as a mildly lost one to the policy.
+4. **Metrics mix episodes** because the env auto-resets inside a rollout; `evalkit` numbers
+   from a training rollout are not per-episode.
+5. **Thruster geometry / coupling** as described above (SYSID B7/B8).
+
+**Status: Wave 3 complete — 148 passed. The full curriculum training run is the human's to
+launch; nothing was started by the orchestrator.**
+
+---
+
+## Wave 4 — Evaluate (C2) + Export (C3) — 2026-10-27
+
+Training input (human-launched, verified from the checkpoint and its event file — not from a
+report): `runs/checkpoints/ckpt_last.pt`, **steps 19,988,480**, iteration **305**,
+`cfg.total_steps` 20,000,000, num_envs 2048, hidden `[256,128,128]`. TensorBoard
+`train/reward` mean per iteration **0.4271 → 0.9166** (first-20 vs last-20), max 1.1222,
+`train/return` 2.05 → 91.95, entropy flat **2.759 → 2.763** (converged, not still learning),
+~30.5k env-steps/s.
+
+### C3 Export — DONE, verified twice independently
+
+Artifacts `runs/policy.onnx` (356,448 B) + `runs/policy_meta.json`; code `export_onnx.py`,
+`tests/test_onnx_parity.py`; report `reports/C3.md`.
+
+- §4.8 satisfied: opset 17, `obs` `[B,150]` → `action` `[B,3]`, **dynamic batch**, `Sub`/`Div`
+  with the checkpoint's `obs_mean`/`obs_std` baked as graph constants, `Tanh` as the last node,
+  no sampling ops.
+- **Parity measured twice: 1.341e-06 and 1.330e-06** max abs diff on 256 obs in `[-3,3]`
+  (limit 1e-4). B=1 → 5.364e-07, B=17 → 1.207e-06.
+- Artifact is genuinely weight-bearing: on-disk `.onnx` is byte-identical to a fresh re-export,
+  and a random-init export differs by max |Δ| **1.059**.
+- `runtime/infer_replay.py` exit 0 on `results/replay_sample.csv`: 50 steps,
+  `sources: fallback=1 policy=49`, `faults: gps=1`. **The CSV is synthetic, not a boat log.**
+- `pytest tests/test_onnx_parity.py` → **6 passed**.
+
+### C2 Evaluate — script delivered, results measured, agent did NOT finish
+
+`evaluate.py` (CLI documented in its docstring), `tests/test_evaluate.py` (6 tests),
+per-seed CSVs and plots under `results/`. The C2 agent **hit its iteration cap and reported
+itself incomplete**; it never wrote `results/summary.*` or `reports/C2.md`. The orchestrator
+finished those.
+
+Measured, 8 envs per seed, real checkpoint, disturbances at full scale (`scale_by_level`
+top row = 1.0). PPO vs PID on identical seeds:
+
+| scenario | seeds | PPO radial mean | PID radial mean | PPO settled | PID settled |
+|---|---|---|---|---|---|
+| `sk_wind` (SK 120 s, level 1.0) | 0–3 | **9.09 – 17.34 m** | 25.37 – 45.26 m | 12.5 – 50.0 % | **0.0 % every seed** |
+| `wp_square` (4-leg 30 m, 200 s) | 1000–1003 | **4.06 – 5.66 m** | 25.66 – 28.97 m | 0.0 – 37.5 % | 0.0 – 37.5 % |
+| `rough_sea` (T7 rough-scale 2.0) | 2000 | **6.84 m** | 32.21 m | 16.7 % | **0.0 %** |
+
+PPO wins on radial error in every scenario and every seed. **This is not yet a fair
+comparison:** the PID baseline cannot close the loop in this sim (Wave 3 finding — every body
+command produces the same surge force, so heading saturates and limit-cycles). The gap above
+measures that modelling defect as much as it measures the policy. Energy is reported in
+**normalised command units** (CONTRACT §4.9 left the joule-equivalent open; decided here).
+
+### Bugs found this wave
+
+1. **`set_curriculum` takes a level INDEX, not a scale.** `envs/asv_env.py:234` does
+   `int(round(level))` and indexes `scale_by_level[0.0, 0.1, 0.25, 0.5, 0.75, 1.0]`, so
+   `set_curriculum(1.0)` selects **scale 0.1**. The auto-advance path used by the training run
+   is index-based throughout and was **not** affected; the training run was correct.
+   - Fixed the two live call sites: `evaluate.py:check_fast_env` (was passing 1.0 → 0.1) and
+     `train.py --curriculum-level` help text, which previously described the argument as "the
+     level" and would silently train at 10 % disturbance.
+2. **`tests/test_evaluate.py` had a wrong expectation, not a code bug.** `episode_arrays`
+   right-aligns blocks per env, so `measured=1` selects each env's **last** block; the fixture
+   assumed episode 0. Corrected the fixture to assert the real right-aligned semantics
+   (`[[True,False],[False,True]]`, and `[[False,False]]` with a geofence exit on the last
+   block). `evaluate.py`'s logic was correct and is unchanged apart from item 1.
+3. **`evalkit/plots.py:58` leaks matplotlib figures** — never calls `close()`, so a 3-scenario
+   × 4-seed run opens >20 and warns. Cosmetic today, a memory risk on longer sweeps. Not fixed
+   (own by B3); recorded.
+4. **Contract/meta drift:** CONTRACT §4.8 lists `"gps_timeout_s": 2.0` inside `safety`, but the
+   exported meta omits it — `gps_timeout_s` now exists only in `CONTRACT.md:449` and a test
+   literal (`tests/test_runtime.py:242`); no runtime code reads it (A4 removed the dead key).
+   `RLController` works. Either the contract text or the meta must be reconciled.
+
+### Caveats carried forward (unchanged)
+
+- Reward weights, geofence 80 m, arrival radius 2.0 m are placeholders (T7/T8).
+- `obs.clip_norm` ±5 at a 10 m scale hides position errors beyond ~50 m.
+- Thruster geometry/coupling unmeasured (SYSID B7/B8) — the reason the PID table is unfair.
+- Episode counts below 8/8 mean geofence truncation, not completion; `complete` flags this.
+- Env is CPU-synchronous (~80–180 ms/step at any batch size; `.item()`/`.cpu()` per step in
+  `sim/disturbance.py` and `sim/sensors.py`). `FastEnv` in `evaluate.py` skips the unread
+  `gps_lat`/`gps_lon` round trip; disturbance wrench parity vs `AsvEnv` measured **0.0**.
+
+**Status: Wave 4 complete — `160 passed, 14 warnings in 245.16s`.** C3 verified twice
+independently. C2's agent hit its iteration cap and self-reported incomplete; the orchestrator
+finished `results/summary.*` and this section, and corrected its two bugs above.
+
+---
+
+
 **Nothing here was validated against the real vessel.** All numbers above are from
 commands run on the dev box; the physical model is placeholder-parameterised throughout.

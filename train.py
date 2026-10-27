@@ -253,6 +253,10 @@ class PPOTrainer:
         return last
 
     def _log_train(self, d: dict) -> None:
+        # one stdout line per iteration: the smoke run is read from a log file (reports/C1.md)
+        print(f"it {self.it:4d} steps {d['steps']:8d} reward {d['reward']:+.4f} "
+              f"return {d['return']:+.3f} pi_loss {d['pi_loss']:+.4f} lr {d['lr']:.2e} "
+              f"steps/s {d['steps_per_s']:.0f}", flush=True)
         if self.writer is None:
             return
         for key in ("reward", "return", "pi_loss", "v_loss", "entropy", "kl", "clip_frac", "lr", "steps_per_s"):
@@ -294,6 +298,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--log-dir", default=None)
     ap.add_argument("--ckpt-dir", default=None)
     ap.add_argument("--resume", default=None, help="checkpoint to continue from")
+    ap.add_argument("--curriculum-level", type=float, default=None,
+                    help="pin the disturbance curriculum level INDEX (not the scale); "
+                         "disables auto-advance. Index i -> "
+                         "disturbance.curriculum.scale_by_level[i], so 0 is no disturbance "
+                         "and n_levels-1 is full scale")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -311,12 +320,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[warn] tensorboard unavailable ({exc}); logging disabled")
 
     trainer = PPOTrainer(cfg, writer=writer)
+    if args.curriculum_level is not None:
+        trainer.env.set_curriculum(float(args.curriculum_level))
     if args.resume:
         trainer.load(args.resume)
     print(f"PPO | envs={trainer.N} rollout={trainer.T} obs_dim={trainer.obs_dim} "
           f"act_dim={trainer.act_dim} device={trainer.device} params={sum(p.numel() for p in trainer.model.parameters())}")
     last = trainer.train(args.iterations)
     print("last:", {k: round(v, 6) if isinstance(v, float) else v for k, v in last.items()})
+    if torch.cuda.is_available():
+        print(f"peak_vram_mib {torch.cuda.max_memory_allocated() / 2**20:.1f} "
+              f"reserved {torch.cuda.max_memory_reserved() / 2**20:.1f}", flush=True)
     if writer is not None:
         writer.close()
     return 0

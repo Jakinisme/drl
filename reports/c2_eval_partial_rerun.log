@@ -1,0 +1,20 @@
+FastEnv parity vs AsvEnv: obs 4.87 state 0 reward 0 dist 0 | step 295.5 ms -> 158.3 ms (3 envs, cuda)
+checkpoint E:\buoy-project\drl\runs\checkpoints\ckpt_last.pt steps=19988480 iteration=305 obs_mean|max|=0 obs_std=[1,1]
+E:\buoy-project\drl\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4653: RuntimeWarning: invalid value encountered in subtract
+  diff_b_a = subtract(b, a)
+  sk_wind      ppo seed     0 n_ep 8/8 radial  11.10 m p95  37.03 m settled  50.0% (216 s)
+E:\buoy-project\drl\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4653: RuntimeWarning: invalid value encountered in subtract
+  diff_b_a = subtract(b, a)
+  sk_wind      pid seed     0 n_ep 8/8 radial  45.20 m p95  58.54 m settled   0.0% (128 s)
+  sk_wind      ppo seed     1 n_ep 7/8 radial  17.77 m p95  40.16 m settled   0.0% (100 s)
+  sk_wind      pid seed     1 n_ep 7/8 radial  38.62 m p95  50.05 m settled   0.0% (177 s)
+  sk_wind      ppo seed     2 n_ep 8/8 radial  13.66 m p95  28.66 m settled  12.5% (156 s)
+  sk_wind      pid seed     2 n_ep 6/8 radial  26.25 m p95  38.23 m settled   0.0% (123 s)
+  sk_wind      ppo seed     3 n_ep 8/8 radial   8.46 m p95  32.42 m settled  37.5% (63 s)
+  sk_wind      pid seed     3 n_ep 8/8 radial  34.86 m p95  49.99 m settled   0.0% (81 s)
+  wp_square    ppo seed  1000 n_ep 8/8 radial   5.67 m p95  21.43 m settled  12.5% (149 s)
+  wp_square    pid seed  1000 n_ep 8/8 radial  29.27 m p95  42.47 m settled   0.0% (99 s)
+  wp_square    ppo seed  1001 n_ep 8/8 radial   4.09 m p95  22.69 m settled  37.5% (107 s)
+E:\buoy-project\drl\evalkit\plots.py:58: RuntimeWarning: More than 20 figures have been opened. Figures created through the pyplot interface (`matplotlib.pyplot.figure`) are retained until explicitly closed and may consume too much memory. (To control this warning, see the rcParam `figure.max_open_warning`). Consider using `matplotlib.pyplot.close()`.
+  fig, ax = plt.subplots(figsize=(5, 5))
+  wp_square    pid seed  1001 n_ep 7/8 radial  24.73 m p95  40.61 m settled  28.6% (180 s)

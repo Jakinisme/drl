@@ -1,0 +1,43 @@
+PPO | envs=1024 rollout=32 obs_dim=150 act_dim=3 device=cuda params=88583
+it    0 steps    32768 reward +0.2079 return +2.060 pi_loss -0.0045 lr 2.93e-04 steps/s 18559
+it    1 steps    65536 reward +0.1514 return +2.878 pi_loss -0.0038 lr 2.86e-04 steps/s 19568
+it    2 steps    98304 reward +0.1747 return +4.170 pi_loss -0.0028 lr 2.79e-04 steps/s 20226
+it    3 steps   131072 reward +0.2099 return +6.274 pi_loss -0.0019 lr 2.71e-04 steps/s 20723
+it    4 steps   163840 reward +0.2669 return +9.273 pi_loss -0.0027 lr 2.64e-04 steps/s 20730
+it    5 steps   196608 reward +0.3272 return +12.620 pi_loss -0.0033 lr 2.57e-04 steps/s 20770
+it    6 steps   229376 reward +0.3592 return +15.452 pi_loss -0.0044 lr 2.50e-04 steps/s 20917
+it    7 steps   262144 reward +0.3817 return +17.927 pi_loss -0.0049 lr 2.43e-04 steps/s 20780
+it    8 steps   294912 reward +0.4043 return +20.612 pi_loss -0.0055 lr 2.36e-04 steps/s 20810
+it    9 steps   327680 reward +0.4280 return +23.345 pi_loss -0.0034 lr 2.29e-04 steps/s 20940
+it   10 steps   360448 reward +0.4550 return +26.081 pi_loss -0.0031 lr 2.22e-04 steps/s 21033
+it   11 steps   393216 reward +0.4882 return +28.544 pi_loss -0.0029 lr 2.15e-04 steps/s 21139
+it   12 steps   425984 reward +0.5037 return +30.590 pi_loss -0.0020 lr 2.07e-04 steps/s 21195
+it   13 steps   458752 reward +0.5049 return +32.643 pi_loss -0.0015 lr 2.00e-04 steps/s 21278
+it   14 steps   491520 reward +0.5140 return +34.767 pi_loss -0.0016 lr 1.93e-04 steps/s 21344
+it   15 steps   524288 reward +0.5213 return +37.068 pi_loss -0.0030 lr 1.86e-04 steps/s 21397
+it   16 steps   557056 reward +0.5364 return +39.121 pi_loss -0.0014 lr 1.79e-04 steps/s 21451
+it   17 steps   589824 reward +0.5372 return +40.615 pi_loss -0.0022 lr 1.72e-04 steps/s 21372
+it   18 steps   622592 reward +0.5567 return +42.401 pi_loss -0.0022 lr 1.65e-04 steps/s 21421
+it   19 steps   655360 reward +0.5750 return +44.071 pi_loss -0.0029 lr 1.57e-04 steps/s 21295
+it   20 steps   688128 reward +0.5871 return +45.438 pi_loss -0.0027 lr 1.50e-04 steps/s 20850
+it   21 steps   720896 reward +0.5986 return +46.588 pi_loss -0.0018 lr 1.43e-04 steps/s 20659
+it   22 steps   753664 reward +0.6053 return +47.360 pi_loss -0.0022 lr 1.36e-04 steps/s 20501
+it   23 steps   786432 reward +0.6114 return +48.738 pi_loss -0.0020 lr 1.29e-04 steps/s 20271
+it   24 steps   819200 reward +0.6228 return +50.188 pi_loss -0.0012 lr 1.22e-04 steps/s 20350
+it   25 steps   851968 reward +0.6272 return +51.323 pi_loss -0.0021 lr 1.15e-04 steps/s 20400
+it   26 steps   884736 reward +0.6299 return +52.455 pi_loss -0.0019 lr 1.08e-04 steps/s 20301
+it   27 steps   917504 reward +0.6171 return +52.651 pi_loss -0.0007 lr 1.01e-04 steps/s 20025
+it   28 steps   950272 reward +0.6034 return +52.648 pi_loss -0.0008 lr 9.34e-05 steps/s 19790
+it   29 steps   983040 reward +0.6010 return +53.446 pi_loss -0.0014 lr 8.63e-05 steps/s 19681
+it   30 steps  1015808 reward +0.5885 return +53.807 pi_loss -0.0011 lr 7.91e-05 steps/s 19531
+it   31 steps  1048576 reward +0.5994 return +54.683 pi_loss -0.0011 lr 7.20e-05 steps/s 19464
+it   32 steps  1081344 reward +0.6119 return +55.572 pi_loss -0.0010 lr 6.49e-05 steps/s 19401
+it   33 steps  1114112 reward +0.6347 return +57.039 pi_loss -0.0012 lr 5.77e-05 steps/s 19272
+it   34 steps  1146880 reward +0.6531 return +57.560 pi_loss -0.0008 lr 5.06e-05 steps/s 19155
+it   35 steps  1179648 reward +0.6410 return +57.389 pi_loss -0.0012 lr 4.35e-05 steps/s 19015
+it   36 steps  1212416 reward +0.6456 return +57.853 pi_loss -0.0011 lr 3.64e-05 steps/s 18971
+it   37 steps  1245184 reward +0.4723 return +32.876 pi_loss +0.0004 lr 2.93e-05 steps/s 18931
+it   38 steps  1277952 reward +0.4235 return +51.557 pi_loss -0.0016 lr 2.21e-05 steps/s 18852
+it   39 steps  1310720 reward +0.4811 return +53.858 pi_loss -0.0014 lr 1.50e-05 steps/s 18817
+last: {'reward': 0.481085, 'return': 53.85844, 'adv_std': 5.486353, 'pi_loss': -0.001363, 'v_loss': 28.178134, 'entropy': 2.763146, 'kl': 0.001927, 'clip_frac': 0.004022, 'lr': 1.5e-05, 'steps': 1310720, 'steps_per_s': 18817.490651}
+peak_vram_mib 89.7 reserved 110.0

@@ -1,0 +1,7 @@
+scenario,controller,seed,episode,env,n_samples,duration_s,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,action_rate,settled_pct,energy_j_proxy,n_episodes
+rough_sea,ppo,2000,0,1,1200,119.9,8.1924,32.1349,38.1114,11.9146,inf,,137.471,0.267147,0,26405.4,
+rough_sea,ppo,2000,0,3,1200,119.9,10.6628,44.9269,49.8927,18.4629,inf,,112.553,0.510494,0,21619.2,
+rough_sea,ppo,2000,0,4,1200,119.9,4.00659,25.4957,33.4071,8.76285,114.6,,86.4887,0.739023,100,16612.8,
+rough_sea,ppo,2000,0,5,1200,119.9,6.64852,30.6813,35.2497,11.9475,inf,,90.8433,0.580309,0,17449.2,
+rough_sea,ppo,2000,0,6,1200,119.9,8.80794,16.1594,24.6694,9.66741,inf,,258.915,0.252082,0,49732.3,
+rough_sea,ppo,2000,0,7,1200,119.9,2.71893,5.09339,12.776,3.2092,inf,,191.28,0.409327,0,36741,

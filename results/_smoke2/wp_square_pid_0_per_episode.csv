@@ -1,0 +1,5 @@
+scenario,controller,seed,episode,env,n_samples,duration_s,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,action_rate,settled_pct,energy_j_proxy,n_episodes
+wp_square,pid,0,0,0,2000,199.9,33.9539,36.0374,36.1954,4.10171,inf,,259.504,1.14001,0,49845.5,
+wp_square,pid,0,0,1,2000,199.9,36.892,50.6353,52.1347,14.5959,inf,,242.315,1.12226,0,46543.8,
+wp_square,pid,0,0,2,2000,199.9,43.6228,53.4266,54.2067,13.6707,inf,,259.411,1.10322,0,49827.7,
+wp_square,pid,0,0,3,2000,199.9,15.5954,28.6215,30.3275,7.29998,inf,,248.968,1.06552,0,47821.7,

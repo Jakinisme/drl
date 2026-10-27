@@ -1,0 +1,19 @@
+device=cuda  physics randomisation OFF  curriculum level 0  seed 0  PID default (0.05 output deadband)
+
+PID station keeping | 1200 policy steps = 120 s, 16 envs
+  radial error  mean 45.54 m   p95 93.96 m
+  cross-track RMSE (path)   47.37 m
+  settled (tol 2.0 m)       0 % of envs, mean inf s
+  energy (normalized)       272.4
+  action rate               1.416 1/s
+  batch-mean error  first 1 s 40.03 m -> last 6 s 48.39 m
+
+PID waypoint | 1200 policy steps = 120 s, 16 envs
+  radial error  mean 39.24 m   p95 84.36 m
+  cross-track RMSE (path)   25.12 m
+  settled (tol 2.0 m)       0 % of envs, mean inf s
+  energy (normalized)       223.4
+  action rate               1.436 1/s
+  batch-mean error  first 1 s 38.79 m -> last 6 s 40.90 m
+
+All numbers are simulator outputs with placeholder vehicle parameters (configs/vehicle.yaml TODO SYSID), not measurements of the real vessel.

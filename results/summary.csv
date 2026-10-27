@@ -1,0 +1,7 @@
+scenario,controller,seeds,episodes,radial_mean_m,radial_p95_mean_m,cross_track_rmse_m,energy_norm,action_rate_1_s,settled_pct
+sk_wind,ppo,4,31,12.715,34.74,14.994,134.54,0.5487,32.26
+sk_wind,pid,4,29,37.708,50.896,38.13,223.54,1.0496,0.0
+wp_square,ppo,4,32,4.616,21.975,4.029,90.9,0.8421,15.62
+wp_square,pid,4,30,27.077,41.711,12.929,251.95,1.2024,13.33
+rough_sea,ppo,1,6,6.84,25.749,10.661,146.26,0.4597,16.67
+rough_sea,pid,1,5,32.21,45.21,33.485,243.42,0.7267,0.0
