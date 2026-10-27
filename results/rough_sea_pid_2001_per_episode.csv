@@ -1,0 +1,6 @@
+scenario,controller,seed,episode,env,n_samples,duration_s,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,action_rate,settled_pct,energy_j_proxy,n_episodes
+rough_sea,pid,2001,0,1,1200,119.9,62.1817,76.068,76.6214,63.1353,inf,,277.721,0.826824,0,53344.7,
+rough_sea,pid,2001,0,4,1200,119.9,13.038,22.8788,23.4617,14.7046,inf,,256.551,0.998705,0,49278.4,
+rough_sea,pid,2001,0,5,1200,119.9,39.428,50.964,52.3594,40.1586,inf,,147.773,1.13911,0,28384.2,
+rough_sea,pid,2001,0,6,1200,119.9,50.3106,86.3926,91.7742,54.0434,inf,,258.157,0.732117,0,49586.8,
+rough_sea,pid,2001,0,7,1200,119.9,41.516,42.2133,42.2599,41.5178,inf,,311.984,0.257571,0,59925.9,

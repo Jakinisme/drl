@@ -1,29 +1,8 @@
-# C2 — PPO vs PID, identical seeds
-
-Checkpoint: `runs/checkpoints/ckpt_last.pt` (steps 19,988,480, iteration 305).
-Env: 8 envs per seed; disturbance pinned to the top `scale_by_level` row (1.0).
-Energy is in **normalised command units** (CONTRACT §4.9 left joule-equivalent open;
-decided here — `energy_j_proxy` is the rough joule figure and is not the headline).
-
-| scenario | controller | seeds | episodes | radial mean | p95 | cross-track | energy | action rate | settled |
-|---|---|---|---|---|---|---|---|---|---|
-| sk_wind | PPO | 4 | 31 | 12.72 m | 34.74 m | 14.99 m | 134.5 | 0.549/s | 32.3 % |
-| sk_wind | PID | 4 | 29 | 37.71 m | 50.90 m | 38.13 m | 223.5 | 1.050/s | 0.0 % |
-| wp_square | PPO | 4 | 32 | 4.62 m | 21.97 m | 4.03 m | 90.9 | 0.842/s | 15.6 % |
-| wp_square | PID | 4 | 30 | 27.08 m | 41.71 m | 12.93 m | 251.9 | 1.202/s | 13.3 % |
-| rough_sea | PPO | 1 | 6 | 6.84 m | 25.75 m | 10.66 m | 146.3 | 0.460/s | 16.7 % |
-| rough_sea | PID | 1 | 5 | 32.21 m | 45.21 m | 33.49 m | 243.4 | 0.727/s | 0.0 % |
-
-## Not a fair comparison yet
-
-The PID baseline cannot close the loop in this sim (Wave 3 finding: every body command
-yields the same surge force, so heading saturates and limit-cycles). PID settling 0.0 % on
-`sk_wind` and `rough_sea` is that defect, not necessarily poor tuning. The radial gap below
-therefore measures the modelling defect as much as the policy.
-
-## Other caveats
-
-- Placeholders: reward weights, geofence 80 m, arrival radius 2.0 m (T7/T8).
-- `obs.clip_norm` ±5 at a 10 m scale hides errors beyond ~50 m.
-- Episode counts under 8/8 are geofence truncations, not completions (`complete` flag).
-- Nothing here was validated on the real vessel.
+| scenario | controller | seeds | episodes | n_episodes | n_envs | duration_s | level | radial_error_mean | radial_error_p95 | radial_error_max | cross_track_rmse | settling_time_s | settling_p95_s | energy | energy_j_proxy | action_rate | settled_pct |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sk_wind | ppo | 4 | 1 | 31 | 8 | 120 | 1 | 12.8 | 34.9 | 38.9 | 15.2 | inf | inf | 134 | 2.58e+04 | 0.552 | 28.6 |
+| sk_wind | pid | 4 | 1 | 29 | 8 | 120 | 1 | 37.1 | 51 | 52.7 | 37.8 | inf | inf | 223 | 4.28e+04 | 1.07 | 0 |
+| wp_square | ppo | 4 | 1 | 32 | 8 | 200 | 1 | 4.46 | 21.9 | 34.3 | 3.97 | inf | inf | 88.7 | 1.7e+04 | 0.906 | 25 |
+| wp_square | pid | 4 | 1 | 31 | 8 | 200 | 1 | 26 | 40.6 | 45 | 12.4 | inf | inf | 252 | 4.84e+04 | 1.2 | 16.5 |
+| rough_sea | ppo | 4 | 1 | 25 | 8 | 120 | 1 | 12.8 | 34.3 | 38.6 | 17.1 | inf | inf | 166 | 3.2e+04 | 0.514 | 20.7 |
+| rough_sea | pid | 4 | 1 | 20 | 8 | 120 | 1 | 37.3 | 51.1 | 52.7 | 38.7 | inf | inf | 236 | 4.54e+04 | 0.824 | 0 |

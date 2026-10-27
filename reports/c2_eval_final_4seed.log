@@ -1,0 +1,39 @@
+FastEnv parity vs AsvEnv: obs 4.76 state 0 reward 0 dist 0 | step 155.9 ms -> 68.4 ms (3 envs, cuda)
+checkpoint E:\buoy-project\drl\runs\checkpoints\ckpt_last.pt steps=19988480 iteration=305 obs_mean|max|=0 obs_std=[1,1]
+E:\buoy-project\drl\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4653: RuntimeWarning: invalid value encountered in subtract
+  diff_b_a = subtract(b, a)
+  sk_wind      ppo seed     0 n_ep 8/8 radial  11.12 m p95  37.08 m settled  50.0% (74 s)
+  sk_wind      pid seed     0 n_ep 8/8 radial  44.79 m p95  58.31 m settled   0.0% (72 s)
+  sk_wind      ppo seed     1 n_ep 7/8 radial  17.35 m p95  39.58 m settled  14.3% (73 s)
+  sk_wind      pid seed     1 n_ep 7/8 radial  39.41 m p95  50.22 m settled   0.0% (72 s)
+  sk_wind      ppo seed     2 n_ep 8/8 radial  13.75 m p95  28.75 m settled  12.5% (72 s)
+  sk_wind      pid seed     2 n_ep 6/8 radial  27.32 m p95  41.04 m settled   0.0% (73 s)
+  sk_wind      ppo seed     3 n_ep 8/8 radial   9.10 m p95  34.00 m settled  37.5% (69 s)
+  sk_wind      pid seed     3 n_ep 8/8 radial  36.93 m p95  54.32 m settled   0.0% (71 s)
+  wp_square    ppo seed  1000 n_ep 8/8 radial   5.37 m p95  21.45 m settled  12.5% (117 s)
+  wp_square    pid seed  1000 n_ep 8/8 radial  29.66 m p95  42.00 m settled   0.0% (119 s)
+  wp_square    ppo seed  1001 n_ep 8/8 radial   4.17 m p95  22.59 m settled  37.5% (123 s)
+  wp_square    pid seed  1001 n_ep 7/8 radial  25.14 m p95  40.60 m settled  28.6% (114 s)
+  wp_square    ppo seed  1002 n_ep 8/8 radial   4.15 m p95  21.47 m settled  25.0% (92 s)
+  wp_square    pid seed  1002 n_ep 8/8 radial  25.38 m p95  42.52 m settled  25.0% (246 s)
+  wp_square    ppo seed  1003 n_ep 8/8 radial   4.14 m p95  22.06 m settled  25.0% (247 s)
+  wp_square    pid seed  1003 n_ep 8/8 radial  24.01 m p95  37.23 m settled  12.5% (294 s)
+  rough_sea    ppo seed  2000 n_ep 6/8 radial   6.88 m p95  25.69 m settled   0.0% (146 s)
+  rough_sea    pid seed  2000 n_ep 5/8 radial  33.54 m p95  46.08 m settled   0.0% (180 s)
+  rough_sea    ppo seed  2001 n_ep 7/8 radial  18.24 m p95  40.04 m settled  28.6% (184 s)
+  rough_sea    pid seed  2001 n_ep 5/8 radial  41.29 m p95  55.70 m settled   0.0% (351 s)
+  rough_sea    ppo seed  2002 n_ep 5/8 radial   9.49 m p95  33.64 m settled  40.0% (265 s)
+  rough_sea    pid seed  2002 n_ep 5/8 radial  43.11 m p95  59.39 m settled   0.0% (160 s)
+  rough_sea    ppo seed  2003 n_ep 7/8 radial  16.58 m p95  37.67 m settled  14.3% (153 s)
+  rough_sea    pid seed  2003 n_ep 5/8 radial  31.37 m p95  43.41 m settled   0.0% (135 s)
+
+| scenario | controller | seeds | episodes | n_episodes | n_envs | duration_s | level | radial_error_mean | radial_error_p95 | radial_error_max | cross_track_rmse | settling_time_s | settling_p95_s | energy | energy_j_proxy | action_rate | settled_pct |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sk_wind | ppo | 4 | 1 | 31 | 8 | 120 | 1 | 12.8 | 34.9 | 38.9 | 15.2 | inf | inf | 134 | 2.58e+04 | 0.552 | 28.6 |
+| sk_wind | pid | 4 | 1 | 29 | 8 | 120 | 1 | 37.1 | 51 | 52.7 | 37.8 | inf | inf | 223 | 4.28e+04 | 1.07 | 0 |
+| wp_square | ppo | 4 | 1 | 32 | 8 | 200 | 1 | 4.46 | 21.9 | 34.3 | 3.97 | inf | inf | 88.7 | 1.7e+04 | 0.906 | 25 |
+| wp_square | pid | 4 | 1 | 31 | 8 | 200 | 1 | 26 | 40.6 | 45 | 12.4 | inf | inf | 252 | 4.84e+04 | 1.2 | 16.5 |
+| rough_sea | ppo | 4 | 1 | 25 | 8 | 120 | 1 | 12.8 | 34.3 | 38.6 | 17.1 | inf | inf | 166 | 3.2e+04 | 0.514 | 20.7 |
+| rough_sea | pid | 4 | 1 | 20 | 8 | 120 | 1 | 37.3 | 51.1 | 52.7 | 38.7 | inf | inf | 236 | 4.54e+04 | 0.824 | 0 |
+
+wrote E:\buoy-project\drl\results (3509 s total, device cuda)

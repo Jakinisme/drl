@@ -18,3 +18,55 @@ E:\buoy-project\drl\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:465
 E:\buoy-project\drl\evalkit\plots.py:58: RuntimeWarning: More than 20 figures have been opened. Figures created through the pyplot interface (`matplotlib.pyplot.figure`) are retained until explicitly closed and may consume too much memory. (To control this warning, see the rcParam `figure.max_open_warning`). Consider using `matplotlib.pyplot.close()`.
   fig, ax = plt.subplots(figsize=(5, 5))
   wp_square    pid seed  1001 n_ep 7/8 radial  24.73 m p95  40.61 m settled  28.6% (180 s)
+  wp_square    ppo seed  1002 n_ep 8/8 radial   4.17 m p95  21.26 m settled  12.5% (183 s)
+  wp_square    pid seed  1002 n_ep 8/8 radial  24.86 m p95  41.27 m settled  25.0% (184 s)
+  wp_square    ppo seed  1003 n_ep 8/8 radial   4.55 m p95  22.40 m settled  25.0% (178 s)
+  wp_square    pid seed  1003 n_ep 8/8 radial  24.17 m p95  37.97 m settled  25.0% (173 s)
+  rough_sea    ppo seed  2000 n_ep 6/8 radial  10.27 m p95  26.14 m settled   0.0% (103 s)
+  rough_sea    pid seed  2000 n_ep 5/8 radial  32.28 m p95  46.13 m settled   0.0% (117 s)
+  rough_sea    ppo seed  2001 n_ep 7/8 radial  18.28 m p95  40.12 m settled  14.3% (109 s)
+  rough_sea    pid seed  2001 n_ep 4/8 radial  35.76 m p95  50.80 m settled   0.0% (113 s)
+  rough_sea    ppo seed  2002 n_ep 5/8 radial   9.45 m p95  33.68 m settled  40.0% (107 s)
+Traceback (most recent call last):
+  File "E:\buoy-project\drl\evaluate.py", line 724, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "E:\buoy-project\drl\evaluate.py", line 660, in main
+    plots(out_dir, name, kind, ep, path, args.tol, meta["policy_dt"])
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\buoy-project\drl\evaluate.py", line 719, in plots
+    plot_trajectory(tr, out=str(out_dir / f"{name}_{kind}_track.png"))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\buoy-project\drl\evalkit\plots.py", line 77, in plot_trajectory
+    fig.savefig(out, dpi=120)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "E:\buoy-project\drl\.venv\Lib\site-packages\matplotlib\figure.py", line 3395, in savefig
+    self.canvas.print_figure(fname, **kwargs)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "E:\buoy-project\drl\.venv\Lib\site-packages\matplotlib\backend_bases.py", line 2204, in print_figure
+    result = print_method(
+        filename,
+    ...<3 lines>...
+        bbox_inches_restore=_bbox_inches_restore,
+        **kwargs)
+  File "E:\buoy-project\drl\.venv\Lib\site-packages\matplotlib\backend_bases.py", line 2054, in <lambda>
+    print_method = functools.wraps(meth)(lambda *args, **kwargs: meth(
+                                                                 ~~~~^
+        *args, **{k: v for k, v in kwargs.items() if k not in skip}))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\buoy-project\drl\.venv\Lib\site-packages\matplotlib\backends\backend_agg.py", line 496, in print_png
+    self._print_pil(filename_or_obj, "png", pil_kwargs, metadata)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\buoy-project\drl\.venv\Lib\site-packages\matplotlib\backends\backend_agg.py", line 445, in _print_pil
+    mpl.image.imsave(
+    ~~~~~~~~~~~~~~~~^
+        filename_or_obj, self.buffer_rgba(), format=fmt, origin="upper",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        dpi=self.figure.dpi, metadata=metadata, pil_kwargs=pil_kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\buoy-project\drl\.venv\Lib\site-packages\matplotlib\image.py", line 1676, in imsave
+    image.save(fname, **pil_kwargs)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "E:\buoy-project\drl\.venv\Lib\site-packages\PIL\Image.py", line 2707, in save
+    fp = builtins.open(filename, "w+b")
+OSError: [Errno 22] Invalid argument: 'results\\rough_sea_ppo_track.png'

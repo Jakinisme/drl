@@ -16,7 +16,8 @@ import numpy as np
 import pytest
 
 from evalkit.metrics import (action_rate, cross_track_rmse, energy, mean_p95,
-                             radial_error, settling_time, summarize)
+                             radial_error, settling_time, summarize,
+                             waypoint_progress)
 
 DRL = Path(__file__).resolve().parents[1]
 
@@ -195,6 +196,88 @@ def test_summarize_waypoint_uses_goal_sequence_as_path():
     # explicit path wins over the derived one
     m2 = summarize({**traj, "path": np.array([[0.0, 10.0], [10.0, 10.0]])})
     assert m2["cross_track_rmse"] == pytest.approx(9.5)
+
+
+# ---------------------------------------------------------------- waypoints (R4)
+# Square: start (0,0), corners 1..4 = (30,0) (30,30) (0,30) (0,0).  Arrival radius 2 m.
+CORNERS = np.array([[30.0, 0.0], [30.0, 30.0], [0.0, 30.0], [0.0, 0.0]])
+
+
+def _drive(waypoints, dt=0.5, speed=2.0):
+    """Straight-line trace through `waypoints` at constant `speed`; goal_xy = the target
+    point being driven to (what the env would hold as the active goal)."""
+    legs = [np.array([0.0, 0.0])] + list(waypoints)
+    pts, goals = [legs[0]], [waypoints[0]]
+    for a, b in zip(legs[:-1], legs[1:]):
+        steps = max(1, int(np.ceil(np.hypot(*(b - a)) / (speed * dt))))
+        for i in range(1, steps + 1):
+            pts.append(a + (b - a) * (i / steps))
+            goals.append(b)
+    p = np.array(pts)
+    t = np.arange(p.shape[0]) * dt
+    return t, p, np.array(goals)
+
+
+def test_waypoint_stall_before_corner1_reaches_nothing():
+    """R4 failure mode: drive east, park 3.4 m short of corner 1 for the rest of the run."""
+    c1 = CORNERS[0]
+    stop = c1 - np.array([3.4, 0.0])
+    t, p, g = _drive([stop], speed=2.0)
+    t = np.concatenate([t, t[-1] + 0.5 + np.arange(300) * 0.5])
+    p = np.vstack([p, np.tile(stop, (300, 1))])
+    g = np.vstack([g, np.tile(c1, (300, 1))])
+    traj = {"t": t, "xy": p, "psi": np.zeros(t.size), "action": np.zeros((t.size, 3)),
+            "goal_xy": g, "mode": np.zeros(t.size)}
+    wp = waypoint_progress(t, p, g, CORNERS)
+    assert wp["waypoints_reached"] == 0 and wp["lap_completed"] is False
+    assert all(np.isnan(x) for x in wp["time_to_waypoint"])
+    m = summarize({**traj, "path": CORNERS}, waypoints=CORNERS)
+    assert m["waypoints_reached"] == 0 and m["lap_completed"] is False
+    # ... and once it parks, the radial mean is just the parking distance: a small number,
+    # which is exactly why the old metric called this "good" (reports/R4.md §1)
+    tail = slice(200, None)
+    assert mean_p95(radial_error(p[tail], g[tail]))[0] == pytest.approx(3.4, abs=0.05)
+
+
+def test_waypoint_lap_in_order_counts_four():
+    t, p, g = _drive(CORNERS, speed=0.5, dt=0.1)   # 0.1 s, 5 cm per sample: no corner is skipped
+    wp = waypoint_progress(t, p, g, CORNERS)
+    assert wp["waypoints_reached"] == 4, wp["time_to_waypoint"]
+    assert wp["lap_completed"] is True
+    assert len(wp["time_to_waypoint"]) == 4
+    assert np.all(np.diff(wp["time_to_waypoint"]) > 0)      # in time order
+    m = summarize({"t": t, "xy": p, "psi": np.zeros(t.size), "action": np.zeros((t.size, 3)),
+                   "goal_xy": g, "mode": np.zeros(t.size)}, waypoints=CORNERS)
+    assert m["waypoints_reached"] == 4 and m["lap_completed"] is True
+
+
+def test_waypoint_out_of_order_visit_earns_nothing_for_the_skipped_corner():
+    """Corner 2 visited before corner 1: 2 is planned second, so it only counts after 1."""
+    early = CORNERS[1]
+    t, p, g = _drive([early, CORNERS[0], CORNERS[1]])
+    wp = waypoint_progress(t, p, g, CORNERS)
+    # while 2 was visited, 1 was the active goal -> nothing; then 1, then 2 -> 2 reached
+    assert wp["waypoints_reached"] == 2 and wp["lap_completed"] is False
+    # the visit of corner 2 that precedes corner 1 did NOT set its time: t(2) > t(1)
+    assert wp["time_to_waypoint"][1] > wp["time_to_waypoint"][0]
+
+
+def test_waypoint_requires_it_to_be_the_active_goal():
+    """Passing within the radius while goal_xy points elsewhere does not count."""
+    p = np.array([[29.0, 0.0], [30.0, 0.0], [31.0, 0.0]])
+    t = np.array([0.0, 0.5, 1.0])
+    g = np.tile(CORNERS[1], (3, 1))                          # goal = corner 2, not corner 1
+    wp = waypoint_progress(t, p, g, CORNERS[:1])
+    assert wp["waypoints_reached"] == 0 and wp["lap_completed"] is False
+
+
+def test_summarize_without_waypoints_reports_nan():
+    t = np.arange(3.0)
+    traj = {"t": t, "xy": np.zeros((3, 2)), "psi": np.zeros(3),
+            "action": np.zeros((3, 3)), "goal_xy": np.zeros((3, 2)), "mode": np.ones(3)}
+    m = summarize(traj)
+    assert np.isnan(m["waypoints_reached"]) and m["lap_completed"] is False
+    assert m["time_to_waypoint"] == []
 
 
 # ---------------------------------------------------------------- import hygiene

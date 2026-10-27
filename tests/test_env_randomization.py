@@ -9,6 +9,8 @@ in behaviour against the old env writer.
 
 import copy
 import hashlib
+
+import pytest
 import inspect
 import math
 import re
@@ -25,13 +27,19 @@ ZERO_KEYS = ("mass", "inertia", "drag", "thruster_gain", "thruster_lag",
              "thruster_deadband", "fwd_rev_asymmetry", "weak_thruster_prob",
              "sensor_noise", "sensor_latency_s")
 
-# sha256 of an 8-env, 15-step rollout with every randomisation range at 0.
-# Re-recorded in R3: the pre-R2 value (0af78a8e…) pinned a rollout whose episodes started
-# with the estimator at the ENU origin. R3 seeds the estimator + GPS ring with the spawn
-# pose (reports/R3.md §1), so the reset obs legitimately changed. Verified that ignoring
-# `pos`/`heading` in `SensorModel.reset` reproduces 0af78a8e… bit for bit, i.e. seeding is
-# the only difference; the value below still fails on any other drift.
-PRE_CHANGE_HASH = "e115cfc54cfdc7dcaf33c515cac4da0ff4abe414ed17761fb337f5e43d307ece"
+# sha256 of an 8-env, 15-step rollout with every randomisation range at 0 and every reward
+# weight at 0, so only physics/obs/randomisation enter it.
+#
+# Re-recorded in R4 (was e115cfc5…). R4 did NOT find R3 wrong: the R3 pin is reproduced
+# EXACTLY on the R4 code when the PRE-R4 reward is restored (keys absent, w_cross_track 0.2,
+# no arrival event), so the pin was correct for the code it described. Isolation table
+# (reports/R4.md §5):
+#   pre-R4 reward restored (R4 code, zeroed ranges)  -> e115cfc5…  == the R3 pin
+#   R4 reward, R4 env.yaml as published              -> 6c5de9ea…  (this pin)
+# The reward is inside this hash, so R4's reward change owns the move; the env.yaml key set,
+# the obs, the physics and the sampling order are unchanged (the pre-R4 run above reuses all
+# of them). Re-record again only together with a deliberate reward/obs/physics change.
+PRE_CHANGE_HASH = "6c5de9ea11117b797ea62b7a3bbb67be63691a6d2f4465666a1d070d30b2c8ba"
 
 
 def _cfg(zero: bool = False, **over) -> dict:
@@ -39,6 +47,11 @@ def _cfg(zero: bool = False, **over) -> dict:
     if zero:
         for key in ZERO_KEYS:
             cfg["randomization"][key] = 0.0
+        # R4: with every w_* = 0 the reward stream is what changed, not the rollout; but it
+        # stays in the hash on purpose -- `0.0 * inf` is not identically 0 (reports/R4.md §5)
+        for key in cfg["reward"]:
+            if key.startswith("w_"):
+                cfg["reward"][key] = 0.0
     cfg["episode"]["geofence_m"] = 1e6          # no auto-reset inside a rollout
     cfg["episode_s"] = 1e4
     for path, val in over.items():
@@ -72,6 +85,7 @@ def test_every_randomised_quantity_differs_across_envs():
     assert (thr.lag_tau / env.lag0 - 1.0).abs().max() <= env.r_lag + 1e-5
     assert (sen.pos_sigma_env / sen.gps_pos_sigma - 1.0).abs().max() <= env.r_noise + 1e-5
     assert (sen.latency_env - env._latency0).abs().max() <= env.r_latency + 1e-5
+
 
 
 def test_randomisation_off_rollout_matches_pre_change_snapshot():

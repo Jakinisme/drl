@@ -586,19 +586,35 @@ itself incomplete**; it never wrote `results/summary.*` or `reports/C2.md`. The 
 finished those.
 
 Measured, 8 envs per seed, real checkpoint, disturbances at full scale (`scale_by_level`
-top row = 1.0). PPO vs PID on identical seeds:
+top row = 1.0), **4 seeds per scenario for all three scenarios**, run to completion:
 
-| scenario | seeds | PPO radial mean | PID radial mean | PPO settled | PID settled |
-|---|---|---|---|---|---|
-| `sk_wind` (SK 120 s, level 1.0) | 0–3 | **9.09 – 17.34 m** | 25.37 – 45.26 m | 12.5 – 50.0 % | **0.0 % every seed** |
-| `wp_square` (4-leg 30 m, 200 s) | 1000–1003 | **4.06 – 5.66 m** | 25.66 – 28.97 m | 0.0 – 37.5 % | 0.0 – 37.5 % |
-| `rough_sea` (T7 rough-scale 2.0) | 2000 | **6.84 m** | 32.21 m | 16.7 % | **0.0 %** |
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe evaluate.py --envs 8 --seeds 4 --no-plots
+wrote E:\buoy-project\drl\results (3509 s total, device cuda)
+```
 
-PPO wins on radial error in every scenario and every seed. **This is not yet a fair
-comparison:** the PID baseline cannot close the loop in this sim (Wave 3 finding — every body
-command produces the same surge force, so heading saturates and limit-cycles). The gap above
-measures that modelling defect as much as it measures the policy. Energy is reported in
-**normalised command units** (CONTRACT §4.9 left the joule-equivalent open; decided here).
+PPO vs PID on identical seeds (`results/summary.md`, `results/summary.csv`):
+
+| scenario | seeds | controller | episodes | radial mean | p95 | cross-track | energy | action rate | settled |
+|---|---|---|---|---|---|---|---|---|---|
+| `sk_wind` (SK 120 s, level 1.0) | 0–3 | PPO | 31 | **12.8 m** | 34.9 m | 15.2 m | 134 | 0.552 /s | 28.6 % |
+| `sk_wind` | 0–3 | PID | 29 | 37.1 m | 51.0 m | 37.8 m | 223 | 1.070 /s | **0.0 %** |
+| `wp_square` (4-leg, 200 s) | 1000–1003 | PPO | 32 | **4.46 m** | 21.9 m | 3.97 m | 88.7 | 0.906 /s | 25.0 % |
+| `wp_square` | 1000–1003 | PID | 31 | 26.0 m | 40.6 m | 12.4 m | 252 | 1.200 /s | 16.5 % |
+| `rough_sea` (rough-scale 2.0) | 2000–2003 | PPO | 25 | **12.8 m** | 34.3 m | 17.1 m | 166 | 0.514 /s | 20.7 % |
+| `rough_sea` | 2000–2003 | PID | 20 | 37.3 m | 51.1 m | 38.7 m | 236 | 0.824 /s | **0.0 %** |
+
+`settling_time_s` / `settling_p95_s` are `inf` for both controllers in every scenario — the
+1.0 m tolerance with a 5 s hold is never met for long enough under full-scale disturbance.
+
+PPO wins on radial error, p95, cross-track, energy and action rate in every scenario. **This is
+not yet a fair comparison:** the PID baseline cannot close the loop in this sim (Wave 3 finding —
+every body command produces the same surge force, so heading saturates and limit-cycles). PID
+settled 0.0 % on `sk_wind` and `rough_sea` is that defect, not tuning. The gap above measures
+that modelling defect as much as it measures the policy. Energy is reported in **normalised
+command units** (CONTRACT §4.9 left the joule-equivalent open; decided here); `energy_j_proxy`
+is the rough joule figure and is not the headline.
+
 
 ### Bugs found this wave
 
@@ -621,6 +637,15 @@ measures that modelling defect as much as it measures the policy. Energy is repo
    exported meta omits it — `gps_timeout_s` now exists only in `CONTRACT.md:449` and a test
    literal (`tests/test_runtime.py:242`); no runtime code reads it (A4 removed the dead key).
    `RLController` works. Either the contract text or the meta must be reconciled.
+5. **Plot write crashes the run on Windows (found by the orchestrator's final run).** The first
+   `--envs 8 --seeds 4` pass completed **all 24 seeds** and then died during plotting with
+   `OSError: [Errno 22] Invalid argument: 'E:\buoy-project\drl\results\wp_square_ppo_track.png'`
+   — raised inside `PIL.Image.save`. Every per-episode CSV was already on disk; only
+   `results/summary.*` was lost because it is written after the plots. The final run used
+   `--no-plots` and wrote `summary.*` cleanly (3509 s). **Workarounds until fixed:** run with
+   `--no-plots` when the table is what matters, and write `summary.*` **before** the plots so a
+   plot failure cannot destroy a completed sweep.
+
 
 ### Caveats carried forward (unchanged)
 
@@ -632,12 +657,84 @@ measures that modelling defect as much as it measures the policy. Energy is repo
   `sim/disturbance.py` and `sim/sensors.py`). `FastEnv` in `evaluate.py` skips the unread
   `gps_lat`/`gps_lon` round trip; disturbance wrench parity vs `AsvEnv` measured **0.0**.
 
-**Status: Wave 4 complete — `160 passed, 14 warnings in 245.16s`.** C3 verified twice
-independently. C2's agent hit its iteration cap and self-reported incomplete; the orchestrator
-finished `results/summary.*` and this section, and corrected its two bugs above.
+**Status: Wave 4 complete — `160 passed, 14 warnings in 124.22s`** (orchestrator re-ran the full
+suite after the final evaluate sweep; the earlier `245.16s` reading was taken while a sweep was
+competing for the GPU). C3 verified twice independently. C2's agent hit its iteration cap and
+self-reported incomplete; the orchestrator finished `results/summary.*` and this section,
+corrected its two bugs above, and ran the final 4-seed table itself.
+
+**Open for the human before Wave 5:** the plot-crash in item 5 above (a full 3509 s sweep can be
+lost at the last step), and `reports/c2_eval.log` is overwritten by every run — the final 4-seed
+sweep's own log is preserved as `reports/c2_eval_final_4seed.log` (3,684 B, ends
+`wrote ... (3509 s total, device cuda)`); copy new runs aside before comparing sweeps.
 
 ---
 
+
+## Fix unit R4 — waypoint "parking" reward exploit + completion metrics — 2026-10-27
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+172 passed, 14 warnings in 280.70s (0:04:40)
+```
+
+Files: `envs/asv_env.py`, `configs/env.yaml`, `evalkit/metrics.py`, `evaluate.py` (wp_square
+wiring), `tests/test_reward.py` (new, 8), `tests/test_metrics.py` (+5), `CONTRACT.md` §3.4/§4.9,
+`tests/test_env_randomization.py` (hash re-pin), `reports/R4.md`.
+
+### The bug
+In `wp_square` the PPO policy ran east along leg 1, stopped ~3.4 m short of corner 1 and hovered
+for the rest of the episode. Pre-R4 reward paid **1.012/step for parking vs 0.873/step for
+approaching** (hand-computed, both 20 deg off the line): `w_position*exp(-d/10)` scored against
+the *current* goal, so arriving re-points the goal 30 m away and the term collapses
+0.711 -> 0.050. Completing a waypoint lost reward, and no metric could see it — radial error to
+the current goal reads 3.4 m whether the boat is stalling or transiting.
+
+### The fix
+- `final = (mode > 0.5) | (wp_idx + 1 >= n_wp)` gates the position kernels and the
+  near-goal-speed penalty, so intermediate legs are not rewarded for stopping.
+- New `w_position_fine 0.5` / `pos_sigma_fine_m 2.0` near-goal kernel, `w_arrival 10.0` as a
+  **one-shot** `arrive_evt` (non-final: on `adv`; final: first entry only, latched by a new
+  per-env `final_latch` cleared in `reset()`; station keeping: never).
+- Cross-track: `pos_sigma_m 10 -> xtrack_sigma_m 3.0`, `w_cross_track 0.2 -> 0.4` = **22x** the
+  old cost at a 1.5 m offset (spec asked 0.3/10x; 0.3 only gives 16.7x).
+- `info` gains `arrive_evt`, `wp_idx`, `n_wp`; every existing key kept.
+- All new weights are `# TODO T8 placeholder, untuned`.
+
+### Metrics
+`evalkit.metrics.waypoint_progress` -> `waypoints_reached`, `lap_completed`,
+`time_to_waypoint`; `summarize` adds them (`nan`/`False`/`[]` without a plan). `evaluate.py`
+gains `waypoints_reached`, `lap_pct`, `lap_completed` columns for `wp_square` only.
+
+Re-scored with the **invalid pre-R4 checkpoint** (proves the wiring, nothing more): PPO
+`wp 0.75 / lap 18.8 %`, PID `wp 0.25 / lap 6.25 %` — neither controller laps, which the old
+radial-only table hid.
+
+### Hash re-pin (out-of-Owns edit, recorded)
+`tests/test_env_randomization.py` `PRE_CHANGE_HASH` `e115cfc5…` -> `6c5de9ea…`. Cause proven by
+isolation, not asserted: restoring the pre-R4 reward on the R4 code reproduces `e115cfc5…`
+**exactly**, so **R3 was correct** — the pin simply hashes `rew`, and R4 changed the reward
+formula. An earlier draft blamed a `0.0 * inf * 0` float32 NaN; that was **wrong** and is
+corrected in `reports/R4.md` §5 — with `w_* = 0` and real sigmas, `rew` is exactly `[0.0, 0.0]`,
+finite. A NaN appears only if a *sigma* is zeroed too. Lesson: any reward edit re-pins this hash.
+
+### Verification
+NaN smoke only, no real training (`--num-envs 256 --iterations 20 --total-steps 163840`):
+`it 0 reward +0.1931 return +1.963` -> `it 19 reward +0.4254 return +34.901`,
+`v_loss 19.191`, `peak_vram 36.9 MiB`. All finite. 20 iterations says the loop runs, nothing
+about learning quality.
+
+### Consequences
+- **The 20M-step checkpoint and `results/summary.*` are invalid for this issue.** That policy was
+  optimised against the broken reward. They stay as the "before" baseline; measuring whether the
+  fix worked needs a **full retrain, which is the human's to launch**.
+- `w_arrival 10.0` is untested against abuse: `final_latch` stops a *repeating* bonus at the
+  final waypoint, but a single touch-and-back-off per intermediate waypoint still pays once.
+  Watch this in the first run.
+
+**Status: R4 complete — 172 passed. Stopped at the gate; no training was launched.**
+
+---
 
 **Nothing here was validated against the real vessel.** All numbers above are from
 commands run on the dev box; the physical model is placeholder-parameterised throughout.

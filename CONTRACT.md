@@ -207,12 +207,17 @@ reward:
   w_position: 1.0
   w_heading: 0.3
   w_progress: 0.5
-  w_cross_track: 0.2
+  w_cross_track: 0.4       # R4 (was 0.2), see the cross-track note under the code block
   w_near_goal_speed: 0.1
   w_action_rate: 0.05
   w_energy: 0.01
   pos_sigma_m: 10.0        # exponential kernels
   head_sigma_rad: 0.5
+  # R4 keys (all TODO T8 placeholder, untuned; formula below)
+  w_arrival: 10.0          # one-shot bonus per waypoint, on the arrival step
+  w_position_fine: 0.5     # second, tight position kernel (final goal only)
+  pos_sigma_fine_m: 2.0
+  xtrack_sigma_m: 3.0      # cross-track scale (replaced pos_sigma_m there)
 randomization:
   mass: 0.30               # +/- fraction
   inertia: 0.30
@@ -230,6 +235,33 @@ curriculum:
   level_up_fraction: 0.6   # of max_steps
 seed: 0
 ```
+
+Reward (R4; `envs/asv_env.py::_reward`, details in `reports/R4.md`). The B1 formula is
+kept term for term; R4 changes *where* two of the old terms apply (`w_position` and
+`w_near_goal_speed` now fire only at `final`) and adds the three new keys above:
+
+```
+final      = (mode > 0.5) | (wp_idx + 1 >= n_wp)          # station keeping or LAST waypoint
+arrive_evt = 1 where wp_idx advanced this step (non-final WP)
+             or the first time d < arrival_radius_m at the final WP (`final_latch`, reset per
+             episode -> leave-and-re-enter pays nothing again); 0 in station keeping
+r =  w_position      * exp(-d / pos_sigma_m)      * final
+   + w_position_fine * exp(-d / pos_sigma_fine_m) * final
+   + w_heading       * exp(-|psi_err| / head_sigma_rad)
+   + w_progress      * clamp(dd / (max_surge * policy_dt), -1, 1)     # dd to goal0, as before
+   + w_arrival       * arrive_evt
+   - w_cross_track   * clamp((xtrack / xtrack_sigma_m)^2, max=1)
+   - w_near_goal_speed * (speed / max_surge)^2 * (d < slowdown_radius_m) * final
+   - w_action_rate   * mean(a - a_prev)^2
+   - w_energy        * mean(a^2)
+```
+
+`step()` info dict additionally carries `arrive_evt` [N] float, `wp_idx` [N] int64 and
+`n_wp` [N] int64 (clones). Every other info key is unchanged.
+
+`xtrack_sigma_m` replaces `pos_sigma_m` in the cross-track term and `w_cross_track` was raised
+with it, so the cost of 1.5 m of cross-track error is within 1% of the requested 10x:
+old `0.2 * (1.5/10)^2 = 0.0045` vs new `0.4 * (1.5/3)^2 = 0.100`, x22 (reports/R4.md §2).
 
 ### 3.5 `configs/train.yaml` (owner: B2 `train.py`, `models.py`)
 
@@ -490,7 +522,21 @@ def settling_time(t: np.ndarray[T], err: np.ndarray[T], tol: float,
 def energy(t: np.ndarray[T], action: np.ndarray[T, 3]) -> float   # ∫ Σ|a|² dt, normalized units
 def action_rate(t: np.ndarray[T], action: np.ndarray[T, 3]) -> float
 def summarize(traj: dict) -> dict
+def waypoint_progress(t, xy, goal_xy, corners, radius=2.0, reach_tol=5.0) -> dict
 ```
+
+`summarize(traj, tol=None, hold_s=5.0, waypoints=None, arrival_radius=2.0)`; `waypoints`
+([P, 2] planned list in visit order, or `traj["waypoints"]`) adds three R4 keys:
+
+| key | type | meaning |
+|---|---|---|
+| `waypoints_reached` | int | planned waypoints reached IN ORDER; waypoint `c` counts when `\|\|xy - c\|\| < radius` at a sample whose `goal_xy` is within `reach_tol` of `c` (i.e. `c` was the active goal); `nan` when no plan is given |
+| `lap_completed` | bool | all P waypoints reached in order; `False` without a plan |
+| `time_to_waypoint` | list[float] | seconds from `t[0]` per waypoint, `nan` when never reached |
+
+`summarize` keeps every earlier key. Note the order rule is strict: a waypoint visited before
+its predecessor in the plan pays nothing (radial error cannot see a policy that parks 3.4 m
+short of a corner, which is why these counters exist).
 
 `traj` dict keys: `t`, `xy`, `psi`, `action`, `goal_xy`, `mode`. `energy` is in
 normalized-command units (dimensionless·s); if joule-equivalent numbers are wanted,

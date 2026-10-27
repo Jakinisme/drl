@@ -29,6 +29,11 @@ mass/inertia/drag go through `dynamics.set_params`, thruster gain/lag/deadband/a
 through `thrusters.set_gains`, sensor noise/bias/latency through `sensors.set_noise`.
 Zeroing the whole `randomization:` block in the config therefore switches every draw off.
 TODO(CONTRACT T8): geofence radius, episode length, spawn/waypoint boxes are un-tuned.
+
+Reward (reports/R4.md): the position kernels are gated by `final` = station keeping OR the
+last waypoint, so a policy that PARKS at the arrival radius of an intermediate waypoint earns
+no tracking reward for it; crossing the radius pays `w_arrival` once. The final waypoint pays
+`arrive_evt` once per episode (`final_latch`), so leave-and-re-enter cannot farm it.
 """
 
 import math
@@ -214,6 +219,7 @@ class AsvEnv:
         self.wps = z(n, self.max_wp, 2)
         lz = lambda: torch.zeros(n, dtype=torch.long, device=self.device)   # noqa: E731
         self.wp_idx, self.n_wp, self.ep_step = lz(), lz(), lz()
+        self.final_latch = torch.zeros(n, dtype=torch.bool, device=self.device)  # R4
         self.obs_buf = z(n, self.obs_dim)
         self.meas = None
         self.t_loop = 0.0          # control-loop monotonic clock [s], never reset
@@ -266,6 +272,7 @@ class AsvEnv:
         wp_mode = self.mode[idx] < 0.5
         self.n_wp[idx] = torch.where(wp_mode, nw, torch.zeros_like(nw))
         self.wp_idx[idx] = 0
+        self.final_latch[idx] = False
         self.hold_xy[idx] = hold
         self.hold_psi[idx] = s[:, 2]
         self.goal_xy[idx] = torch.where(wp_mode.unsqueeze(1), wps[:, 0], hold)
@@ -368,7 +375,12 @@ class AsvEnv:
         xt = (per[:, 0] * leg[:, 1] - per[:, 1] * leg[:, 0]).abs() / leg.norm(dim=1).clamp(min=1e-6)
         return torch.where(self.mode > 0.5, torch.zeros_like(xt), xt)
 
-    def _update_goals(self) -> None:
+    def _update_goals(self) -> torch.Tensor:
+        """Advance the waypoint pointer where the arrival radius was entered.
+
+        Returns the `adv` mask (reached a NON-final waypoint on this call) so `step()` can
+        pay the arrival bonus for exactly the step the pointer moved.
+        """
         pos = self.state[:, :2]
         d = (self.goal_xy - pos).norm(dim=1)
         adv = (self.mode < 0.5) & (self.wp_idx + 1 < self.n_wp) & (d < self.arrival)
@@ -382,19 +394,45 @@ class AsvEnv:
         bearing = torch.atan2(dx, dy)                      # compass bearing to the goal
         bearing = torch.where(torch.hypot(dx, dy) < 0.5, self.state[:, 2], bearing)
         self.psi_goal = torch.where(self.mode < 0.5, bearing, self.hold_psi)
+        return adv
 
-    def _reward(self, d, dd, a, a_prev) -> torch.Tensor:
+    def _final_mask(self) -> torch.Tensor:
+        """Tracking is scored only at the goal that ends the task (R4).
+
+        Station keeping, or the LAST waypoint of the list. An intermediate waypoint is a
+        gate to cross, not a place to park: keeping its position reward would make sitting
+        3.4 m short of it pay more than advancing to the next 30 m leg (reports/R4.md).
+        """
+        return (self.mode > 0.5) | (self.wp_idx + 1 >= self.n_wp)
+
+    def _arrive_evt(self, adv: torch.Tensor) -> torch.Tensor:
+        """Float [N] arrival event: 1 on the step the pointer moves, or the FIRST time the
+        final waypoint is entered (latched in `final_latch`, cleared on reset)."""
+        d = self._goal_dist()
+        final = self._final_mask() & (self.mode < 0.5)          # final WP in waypoint mode
+        enter = final & (d < self.arrival) & ~self.final_latch
+        self.final_latch |= enter
+        return (adv | enter).to(self.dtype)
+
+    def _reward(self, d, dd, a, a_prev, final=None, arrive_evt=None) -> torch.Tensor:
+        """Per-step reward (CONTRACT §3.4 `reward:` block, reports/R4.md for the formula)."""
         w = self.w
+        if final is None:
+            final = self._final_mask()
+        final = final.to(self.dtype)
         speed = self.state[:, 3:5].norm(dim=1)
         perr = _wrap_pi(self.psi_goal - self.state[:, 2]).abs()
         near = (d < self.slowdown).to(self.dtype)
-        r = (w["w_position"] * torch.exp(-d / w["pos_sigma_m"])
+        r = (w["w_position"] * torch.exp(-d / w["pos_sigma_m"]) * final
+             + w["w_position_fine"] * torch.exp(-d / w["pos_sigma_fine_m"]) * final
              + w["w_heading"] * torch.exp(-perr / w["head_sigma_rad"])
              + w["w_progress"] * (dd / (self.max_surge * self.policy_dt)).clamp(-1.0, 1.0)
-             - w["w_cross_track"] * (self._xtrack() / w["pos_sigma_m"]).pow(2).clamp(max=1.0)
-             - w["w_near_goal_speed"] * (speed / self.max_surge).pow(2) * near
+             - w["w_cross_track"] * (self._xtrack() / w["xtrack_sigma_m"]).pow(2).clamp(max=1.0)
+             - w["w_near_goal_speed"] * (speed / self.max_surge).pow(2) * near * final
              - w["w_action_rate"] * (a - a_prev).pow(2).mean(dim=1)
              - w["w_energy"] * a.pow(2).mean(dim=1))
+        if arrive_evt is not None:
+            r = r + w["w_arrival"] * arrive_evt
         return r.to(self.dtype)
 
     # ------------------------------------------------------------------ step
@@ -419,9 +457,11 @@ class AsvEnv:
         d_prog = (goal0 - self.state[:, :2]).norm(dim=1)
 
         self._sync_level()
-        self._update_goals()
+        adv = self._update_goals()
         d = self._goal_dist()
-        reward = self._reward(d, d_prev - d_prog, a, a_prev)
+        arrive_evt = self._arrive_evt(adv)      # AFTER _update_goals: wp_idx is current
+        reward = self._reward(d, d_prev - d_prog, a, a_prev,
+                              final=self._final_mask(), arrive_evt=arrive_evt)
 
         timeout = self.ep_step >= self.max_steps
         outside = self.state[:, :2].norm(dim=1) > self.geofence
@@ -443,6 +483,9 @@ class AsvEnv:
             "arrived": (d < self.arrival).to(self.dtype),
             "timeout": timeout.to(self.dtype),
             "geofence": outside.to(self.dtype),
+            "arrive_evt": arrive_evt.clone(),
+            "wp_idx": self.wp_idx.clone(),
+            "n_wp": self.n_wp.clone(),
         }
         if bool(done.any()):
             ids = done.nonzero(as_tuple=True)[0]

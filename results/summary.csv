@@ -1,7 +1,7 @@
-scenario,controller,seeds,episodes,radial_mean_m,radial_p95_mean_m,cross_track_rmse_m,energy_norm,action_rate_1_s,settled_pct
-sk_wind,ppo,4,31,12.715,34.74,14.994,134.54,0.5487,32.26
-sk_wind,pid,4,29,37.708,50.896,38.13,223.54,1.0496,0.0
-wp_square,ppo,4,32,4.616,21.975,4.029,90.9,0.8421,15.62
-wp_square,pid,4,30,27.077,41.711,12.929,251.95,1.2024,13.33
-rough_sea,ppo,1,6,6.84,25.749,10.661,146.26,0.4597,16.67
-rough_sea,pid,1,5,32.21,45.21,33.485,243.42,0.7267,0.0
+scenario,controller,seeds,episodes,n_episodes,n_envs,duration_s,level,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,energy_j_proxy,action_rate,settled_pct,radial_error_mean_sd,radial_error_p95_sd,radial_error_max_sd,cross_track_rmse_sd,settling_time_s_sd,settling_p95_s_sd,energy_sd,energy_j_proxy_sd,action_rate_sd,settled_pct_sd
+sk_wind,ppo,4,1,31,8,119.9,1,12.8273,34.8523,38.8954,15.1811,nan,nan,134.077,25753.4,0.552498,28.5714,3.08896,4.03718,4.13236,4.16481,nan,nan,20.72,3979.91,0.108019,15.8215
+sk_wind,pid,4,1,29,8,119.9,1,37.1093,50.9724,52.7077,37.7634,nan,nan,222.571,42751.5,1.0698,0,6.3283,6.40963,6.3169,6.14713,nan,nan,1.99314,382.843,0.112236,0
+wp_square,ppo,4,1,32,8,199.9,1,4.45662,21.8938,34.3415,3.96759,nan,nan,88.7371,17044.6,0.90634,25,0.527475,0.473152,3.12197,0.427665,nan,nan,10.7672,2068.17,0.163025,8.83883
+wp_square,pid,4,1,31,8,199.9,1,26.0449,40.5887,45.0251,12.4328,nan,nan,252.116,48426.5,1.20317,16.5179,2.14781,2.05887,1.98371,1.13918,nan,nan,5.89269,1131.87,0.0393153,11.2496
+rough_sea,ppo,4,1,25,8,119.9,1,12.7983,34.2616,38.6307,17.0796,nan,nan,166.429,31967.7,0.513885,20.7143,4.73914,5.45095,4.06835,4.61418,nan,nan,25.2863,4856.99,0.106712,15.034
+rough_sea,pid,4,1,20,8,119.9,1,37.3278,51.1454,52.6883,38.7308,nan,nan,236.211,45371.3,0.823858,0,4.9743,6.60174,6.77741,5.14661,nan,nan,15.2151,2922.52,0.142093,0

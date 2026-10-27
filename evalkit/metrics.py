@@ -21,6 +21,11 @@ Metric definitions (also in reports/B3.md):
                  ``inf`` when it never settles
 * energy         ``∫ Σ_i a_i(t)^2 dt`` (trapezoid), dimensionless·s
 * action rate    ``Σ_t ||a_t - a_{t-1}||_2 / (t[-1] - t[0])``, 1/s
+* waypoints      ``waypoint_progress`` walks the trace in time order and credits planned
+                 waypoint ``c`` (1-based, in order) the first time ``||xy - c|| < radius``
+                 while ``c`` is the ACTIVE goal, i.e. ``goal_xy`` is near ``c``.  Radial
+                 error cannot see the R4 failure mode (a policy that parks 3.4 m short of
+                 a corner keeps a small mean error), so arrival gets its own counters.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ __all__ = [
     "settling_time",
     "energy",
     "action_rate",
+    "waypoint_progress",
     "summarize",
 ]
 
@@ -126,13 +132,42 @@ def action_rate(t, action) -> float:
     return tv / span if span > 0 else 0.0
 
 
+def waypoint_progress(t, xy, goal_xy, corners, radius: float = 2.0,
+                      reach_tol: float = 5.0) -> dict:
+    """Ordered waypoint bookkeeping along one trajectory (CONTRACT §4.9).
+
+    ``corners`` is the PLANNED waypoint list ``[P, 2]`` in visit order; ``radius`` the
+    arrival radius.  A waypoint counts when it is reached in order AND ``goal_xy`` at that
+    sample is within ``reach_tol`` of it (so "active goal" = what the env was tracking, not
+    a guess).  Returns ``waypoints_reached`` (int), ``lap_completed`` (bool, all P in
+    order), ``time_to_waypoint`` (list of seconds from ``t[0]`` per waypoint, ``nan`` when
+    never reached).
+    """
+    t = _np(t).ravel()
+    p, g, c = _np(xy).reshape(-1, 2), _np(goal_xy).reshape(-1, 2), _np(corners).reshape(-1, 2)
+    n = min(t.size, p.shape[0], g.shape[0])
+    times: list[float] = [float("nan")] * c.shape[0]
+    k = 0                                        # next waypoint expected, in order
+    for i in range(n):
+        if k >= c.shape[0]:
+            break
+        if (np.hypot(*(p[i] - c[k])) < radius
+                and np.hypot(*(g[i] - c[k])) <= reach_tol):
+            times[k] = float(t[i] - t[0]) if t.size else float("nan")
+            k += 1
+    return {"waypoints_reached": int(k),
+            "lap_completed": bool(k == c.shape[0] and c.shape[0] > 0),
+            "time_to_waypoint": times}
+
+
 def _unique_rows(a: np.ndarray) -> np.ndarray:
     """Unique rows, first-occurrence order preserved."""
     _, idx = np.unique(a, axis=0, return_index=True)
     return a[np.sort(idx)]
 
 
-def summarize(traj: dict, tol: float | None = None, hold_s: float = 5.0) -> dict:
+def summarize(traj: dict, tol: float | None = None, hold_s: float = 5.0,
+              waypoints=None, arrival_radius: float = 2.0) -> dict:
     """All metrics for one trajectory.
 
     ``traj`` keys (CONTRACT.md §4.9): ``t``, ``xy``, ``psi``, ``action``, ``goal_xy``,
@@ -141,6 +176,11 @@ def summarize(traj: dict, tol: float | None = None, hold_s: float = 5.0) -> dict
     and a single hold point for station keeping.  ``tol`` defaults to ``traj["tol_m"]``,
     then 1.0 m.  ``psi``/``mode`` are not used by these metrics (no heading metric is
     specified in §4.9) -- the whole trace is scored regardless of mode.
+
+    ``waypoints`` (planned list [P,2], or ``traj["waypoints"]``) adds
+    ``waypoints_reached`` / ``lap_completed`` / ``time_to_waypoint`` via
+    `waypoint_progress`; when absent, ``waypoints_reached`` is ``nan`` and
+    ``lap_completed`` is ``False`` (no plan to check against).
     """
     t = _np(traj["t"]).ravel()
     xy = _np(traj["xy"]).reshape(-1, 2)
@@ -154,6 +194,10 @@ def summarize(traj: dict, tol: float | None = None, hold_s: float = 5.0) -> dict
         tol = float(traj.get("tol_m", 1.0))
 
     m, p95 = mean_p95(err)
+    wps = waypoints if waypoints is not None else traj.get("waypoints")
+    wp = (waypoint_progress(t, xy, goal, wps, arrival_radius) if wps is not None and
+          np.asarray(wps).size else
+          {"waypoints_reached": float("nan"), "lap_completed": False, "time_to_waypoint": []})
     return {
         "n_samples": int(t.size),
         "duration_s": float(t[-1] - t[0]) if t.size else 0.0,
@@ -164,4 +208,5 @@ def summarize(traj: dict, tol: float | None = None, hold_s: float = 5.0) -> dict
         "settling_time_s": settling_time(t, err, tol, hold_s),
         "energy": energy(t, act),
         "action_rate": action_rate(t, act),
+        **wp,
     }

@@ -137,7 +137,9 @@ SCENARIO_NOTES = {
 
 METRIC_COLS = ["radial_error_mean", "radial_error_p95", "radial_error_max",
                "cross_track_rmse", "settling_time_s", "settling_p95_s", "energy",
-               "energy_j_proxy", "action_rate", "settled_pct"]
+               "energy_j_proxy", "action_rate", "settled_pct",
+               # R4: parking 3.4 m short of a corner looks fine to the radial columns
+               "waypoints_reached", "lap_pct", "lap_completed"]
 
 
 # --------------------------------------------------------------------------- config helpers
@@ -410,12 +412,21 @@ class SquarePath:
     overshoot step (first version did, reports/C2.md §4).
     """
 
+    # R4 metric wiring: the four legs of the lap, in the order SquarePath visits them
+    # (corner 0 = spawn, then corners 1..4 = east, north, west, back south).
+    CORNER_IDX = (1, 2, 3, 4)
+
     def __init__(self, env: AsvEnv, side: float, hold_s: float) -> None:
         self.c = square_corners(env, side)                        # [N, 5, 2]
         self.hold_steps = max(1, int(round(hold_s / env.policy_dt)))
         z = lambda: torch.zeros(env.num_envs, dtype=torch.long, device=env.device)  # noqa: E731
         self.idx, self.hold, self.done = z(), z(), torch.zeros(env.num_envs, dtype=torch.bool,
                                                                device=env.device)
+        self.arrival = float(env.arrival)
+
+    def waypoints(self, i: int) -> torch.Tensor:
+        """Planned waypoint list for env `i`, [4, 2] in visit order (R4 metrics)."""
+        return self.c[i, list(self.CORNER_IDX)]
 
     def __call__(self, env: AsvEnv) -> torch.Tensor:
         c = self.c
@@ -496,22 +507,31 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     out["_meta"] = dict(wall_s=time.time() - t_wall, max_steps=T, num_envs=B,
                         policy_dt=env.policy_dt, level=env._level_value())
     out["_path"] = (path.c[:, 1:, :].cpu().numpy() if path is not None else None)
+    out["_waypoints"] = ([path.waypoints(i).cpu().numpy() for i in range(env.num_envs)]
+                         if path is not None else None)
+    out["_arrival"] = (path.arrival if path is not None else float(env.arrival))
     env.close()
     return out
 
 
 # --------------------------------------------------------------------------- scoring
-def score(traj: dict, tol: float, hold_s: float, max_thrust: float, path=None) -> dict:
+def score(traj: dict, tol: float, hold_s: float, max_thrust: float, path=None,
+          waypoints=None, arrival: float = 2.0) -> dict:
     """`evalkit.metrics.summarize` for ONE episode (already [T, ...], NaNs trimmed).
 
     `energy` stays in NORMALISED command units (CONTRACT §4.9 / evalkit default);
     `energy_j_proxy = 2 * max_thrust_fwd_n**2 * energy` is the documented joule PROXY,
     printed for scale only (reports/C2.md §4).
     """
-    m = summarize(traj, tol=tol, hold_s=hold_s) if path is None else \
-        summarize({**traj, "path": path}, tol=tol, hold_s=hold_s)
+    m = summarize(traj, tol=tol, hold_s=hold_s, waypoints=waypoints,
+                  arrival_radius=arrival) if path is None else \
+        summarize({**traj, "path": path}, tol=tol, hold_s=hold_s, waypoints=waypoints,
+                  arrival_radius=arrival)
     m["settled_pct"] = 100.0 if m["settling_time_s"] < np.inf else 0.0
     m["energy_j_proxy"] = 2.0 * max_thrust ** 2 * m["energy"]
+    m["lap_pct"] = 100.0 * float(m["waypoints_reached"]) / len(waypoints) \
+        if waypoints is not None and len(waypoints) else float("nan")
+    m.pop("time_to_waypoint", None)        # list per episode: counts live in the columns
     return m
 
 
@@ -521,7 +541,7 @@ def aggregate(per_ep: list[dict]) -> dict:
     if per_ep:
         for key in per_ep[0]:
             vals = np.array([m[key] for m in per_ep], dtype=np.float64)
-            agg[key] = float(np.mean(vals))
+            agg[key] = float(np.mean(vals))           # bool -> fraction of laps (R4)
             if key == "settling_time_s":
                 agg["settling_p95_s"] = float(np.percentile(vals, 95))
         agg["n_episodes"] = len(per_ep)
@@ -631,6 +651,8 @@ def main(argv: list[str] | None = None) -> int:
                                   args.rough_scale, args.square_side, args.square_hold)
                 meta = rec.pop("_meta")
                 path = rec.pop("_path", None)
+                wps = rec.pop("_waypoints", None)          # R4: [N][4,2] or None
+                arrival = rec.pop("_arrival", 2.0)
                 ep = episode_arrays(rec, meta["max_steps"], args.episodes)
                 per_ep, eps_rows = [], []
                 for e in range(ep["xy"].shape[0]):
@@ -639,7 +661,8 @@ def main(argv: list[str] | None = None) -> int:
                         if tr is None:
                             continue
                         p = path[i] if path is not None else None
-                        m = score(tr, args.tol, args.hold_s, max_thrust, path=p)
+                        m = score(tr, args.tol, args.hold_s, max_thrust, path=p,
+                                  waypoints=None if wps is None else wps[i], arrival=arrival)
                         per_ep.append(m)
                         eps_rows.append({"scenario": name, "controller": kind,
                                          "seed": seed, "episode": e, "env": i, **m})
@@ -655,7 +678,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {name:12s} {kind} seed {seed:5d} n_ep {len(per_ep)}/"
                       f"{meta['num_envs']} radial {agg.get('radial_error_mean', float('nan')):6.2f} m"
                       f" p95 {agg.get('radial_error_p95', float('nan')):6.2f} m settled "
-                      f"{agg.get('settled_pct', 0.0):5.1f}% ({time.time() - t0:.0f} s)")
+                      f"{agg.get('settled_pct', 0.0):5.1f}% wp "
+                      f"{agg.get('waypoints_reached', float('nan')):4.2f} lap "
+                      f"{agg.get('lap_pct', float('nan')):5.1f}% ({time.time() - t0:.0f} s)")
                 if not args.no_plots:
                     plots(out_dir, name, kind, ep, path, args.tol, meta["policy_dt"])
 
