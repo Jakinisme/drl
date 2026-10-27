@@ -1,0 +1,43 @@
+# configs/train.yaml — PPO hyperparameters (owner: B2). CONTRACT.md §3.5.
+# No magic numbers in train.py: everything tunable is here.
+# algo: ppo only. rsl_rl is NOT installed and `pip install rsl-rl-lib` would pull
+# torch-2.14.1 over the working torch 2.6.0+cu124, so train.py ships its own compact PPO.
+algo: ppo
+total_steps: 100000000
+num_envs: 2048
+rollout_steps: 32          # per env, per iteration -> 65536 transitions/iteration
+gamma: 0.99
+lam: 0.95
+clip_ratio: 0.2
+lr: 3.0e-4
+epochs: 5
+minibatches: 4
+entropy_coef: 0.005
+value_coef: 0.5
+max_grad_norm: 1.0
+hidden: [256, 128, 128]
+activation: elu
+init_log_std: -0.5
+device: cuda
+dtype: float32
+log_dir: runs
+ckpt_dir: runs/checkpoints
+save_interval_steps: 5000000
+seed: 0
+
+env_config: configs/env.yaml
+vehicle_config: configs/vehicle.yaml
+disturbance_config: configs/disturbance.yaml
+sensors_config: configs/sensors.yaml
+
+# --- B2 additions (no CONTRACT key renamed) ---
+lr_schedule: linear        # linear anneal lr -> lr*lr_min_frac over total_steps
+lr_min_frac: 0.05
+normalize_advantage: true
+log_interval: 1            # iterations between TensorBoard writes
+# The env already normalizes its observations (CONTRACT §5, clip ±5); these are the
+# optional extra normalization constants baked into PolicyNet for the ONNX export.
+# Set to 150-long lists only if a running-statistics pass is added later.
+obs_mean: null
+obs_std: null
+# Derived, not a knob: obs_dim 150 (15 x K=10), act_dim 3 (CONTRACT §2, §5).
