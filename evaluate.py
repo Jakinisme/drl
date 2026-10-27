@@ -45,7 +45,12 @@ CLI
 --tol M            settled threshold for the "% settled" column (default 1.0 m): the GPS noise
                    floor (configs/sensors.yaml).  The env arrival radius is 2.0 m but that is
                    a WAYPOINT radius (env.yaml, quoted as measured).
---hold-s S         evalkit settling hold time (default 5.0 s).
+--hold-s S         evalkit settling hold time (default 5.0 s).  NOT the corner dwell.
+--dwell-stay-factor F  wp_square dwell hysteresis (default 1.5): the dwell counter starts
+                   below the arrival radius, keeps counting while within F*arrival and resets
+                   only beyond that.  F=1.0 reproduces the pre-R5 behaviour exactly.
+--episode-s S      wp_square ONLY: episode length in s (default 200.0).  Other scenarios keep
+                   their SCENARIOS length.  Both new flags are recorded in summary.json.
 
 Episode accounting (CONTRACT §4.5 — the env auto-resets inside step())
 ---------------------------------------------------------------------
@@ -404,25 +409,39 @@ def square_corners(env: AsvEnv, side: float) -> torch.Tensor:
 class SquarePath:
     """The 4-leg square as an `env.goal_xy` writer, one instance per rollout.
 
-    Only the env's random goal/leg is replaced.  Everything else stays the env's own: the
-    arrival test, the per-leg slowdown factor in `_reward`, the cross-track term (it reads
-    `goal_xy`/`leg_start`) and `mode` — waypoint while travelling, station keeping (hold point
-    + the heading at arrival) for `hold_steps` steps once inside `arrival`.  The dwell timer
-    is what makes the hold stick: a pure radius test drops out of the hold on the next
-    overshoot step (first version did, reports/C2.md §4).
+    Corner 0 = spawn, corners 1..4 = east, north, west, back to the spawn point.  Only the
+    env's random goal/leg is replaced; the arrival test, the slowdown factor, the cross-track
+    term (it reads `goal_xy`/`leg_start`) and `mode` stay the env's own.
+
+    State machine per env (R5, reports/R5_E.md):
+    * travelling (`idx` = leg, 0..3): goal = `c[idx+1]`, mode 0.
+    * within `arrival` of `c[idx+1]`: station keeping at that corner, mode 1, dwell counter
+      running.  Hysteresis: the counter starts below `arrival`, keeps counting below
+      `dwell_stay * arrival`, resets only beyond that.
+    * `hold_steps` of dwell done -> `leave`: at the LAST corner that is the lap finished
+      (`done`, stays mode 1 on `c[4]`); at any other corner the counter restarts and mode
+      returns to waypoint (0) toward `c[idx+1]`.
+    Holding never uses `c[:, 1]`: before `leave` the goal is the ACTIVE corner `c[idx+1]`,
+    after it `c[idx]`.  (R4 pinned `c[:, 1]` for every env after the first leave, so
+    `waypoints_reached` could never exceed 1 — finding 4, reports/R5_E.md.)
     """
 
     # R4 metric wiring: the four legs of the lap, in the order SquarePath visits them
     # (corner 0 = spawn, then corners 1..4 = east, north, west, back south).
     CORNER_IDX = (1, 2, 3, 4)
 
-    def __init__(self, env: AsvEnv, side: float, hold_s: float) -> None:
+    def __init__(self, env: AsvEnv, side: float, hold_s: float,
+                 dwell_stay: float = 1.5) -> None:
         self.c = square_corners(env, side)                        # [N, 5, 2]
         self.hold_steps = max(1, int(round(hold_s / env.policy_dt)))
         z = lambda: torch.zeros(env.num_envs, dtype=torch.long, device=env.device)  # noqa: E731
-        self.idx, self.hold, self.done = z(), z(), torch.zeros(env.num_envs, dtype=torch.bool,
-                                                               device=env.device)
+        self.idx, self.hold = z(), z()
+        self.done = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         self.arrival = float(env.arrival)
+        self.dwell_stay = float(dwell_stay)
+        self.stay = self.arrival * self.dwell_stay
+        # diagnostics of the last call (tests, reports)
+        self.holding, self.goal_xy = self.done.clone(), self.c[:, 0].clone()
 
     def waypoints(self, i: int) -> torch.Tensor:
         """Planned waypoint list for env `i`, [4, 2] in visit order (R4 metrics)."""
@@ -432,16 +451,23 @@ class SquarePath:
         c = self.c
         a = torch.arange(env.num_envs, device=c.device)
         pos = env.state[:, :2]
-        inside = (c[a, (self.idx + 1).clamp(max=4)] - pos).norm(dim=1) < env.arrival
-        # dwell bookkeeping (before the goal is written, so step k+1 sees the new leg)
-        self.hold = torch.where(inside & ~self.done, self.hold + 1, torch.zeros_like(self.hold))
-        leave = (self.hold > self.hold_steps) & ~self.done
-        self.idx = torch.where(leave, (self.idx + 1).clamp(max=4), self.idx)
-        self.done = self.done | leave
+        nxt = (self.idx + 1).clamp(max=4)                         # corner being approached
+        dist = (c[a, nxt] - pos).norm(dim=1)
+        # dwell bookkeeping BEFORE the goal is written, so step k+1 sees the new leg
+        live = ~self.done
+        dwell = torch.where(dist < self.arrival, self.hold + 1,
+                            torch.where((self.hold > 0) & (dist < self.stay), self.hold + 1,
+                                        torch.zeros_like(self.hold)))
+        self.hold = torch.where(live, dwell, self.hold)
+        leave = live & (self.hold > self.hold_steps)
         self.hold = torch.where(leave, torch.zeros_like(self.hold), self.hold)
+        last = leave & (nxt == c.shape[1] - 1)                    # dwell of the final corner
+        self.idx = torch.where(leave & ~last, nxt, self.idx)      # next leg
+        self.done = self.done | last
 
-        holding = self.done | (self.hold > 0)                     # station keeping
-        goal_xy = torch.where(holding.unsqueeze(1), c[:, 1], c[a, (self.idx + 1).clamp(max=4)])
+        holding = live & (self.hold > 0)                          # station keeping
+        # travelling: the corner of leg `idx` is c[idx+1]; holding: the active corner
+        goal_xy = c[a, torch.where(holding, nxt, (self.idx + 1).clamp(max=4))]
         leg_start = c[a, self.idx.clamp(max=3)]
         d = goal_xy - pos
         bearing = torch.atan2(d[:, 0], d[:, 1])
@@ -452,6 +478,7 @@ class SquarePath:
         env.mode.copy_(holding.to(env.dtype))                      # 1 = station keeping
         env.hold_xy.copy_(goal_xy)
         env.psi_goal.copy_(torch.where(holding, env.hold_psi, bearing))
+        self.holding, self.goal_xy = holding, goal_xy.clone()
         return torch.stack([goal_xy[:, 0], goal_xy[:, 1], env.psi_goal, env.mode], dim=1)
 
 
@@ -459,7 +486,8 @@ class SquarePath:
 @torch.no_grad()
 def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
                 episodes: int, num_envs: int, rough_scale: float,
-                square_side: float = SQUARE_SIDE_M, hold_s: float = 10.0) -> dict:
+                square_side: float = SQUARE_SIDE_M, hold_s: float = 10.0,
+                dwell_stay: float = 1.5) -> dict:
     """Simulate `episodes` episodes on `num_envs` envs; return the [T, N, ...] record."""
     cfg = env_cfg(physics_randomize=not scen.get("pid_soft", False))
     cfg["num_envs"] = int(num_envs)
@@ -481,7 +509,8 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     for _ep in range(int(episodes)):
         obs = env.reset()                       # all envs: identical start for both controllers
         ctrl = make_controller(kind, policy, device, scen, env.policy_dt)
-        path = SquarePath(env, square_side, hold_s) if scen["square"] else None
+        path = (SquarePath(env, square_side, hold_s, dwell_stay)
+                if scen["square"] else None)
         for _k in range(T):
             est = env.meas["est"]
             if path is not None:
@@ -506,7 +535,7 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     out = {k: torch.stack(v).cpu().numpy() for k, v in rec.items()}
     out["_meta"] = dict(wall_s=time.time() - t_wall, max_steps=T, num_envs=B,
                         policy_dt=env.policy_dt, level=env._level_value())
-    out["_path"] = (path.c[:, 1:, :].cpu().numpy() if path is not None else None)
+    out["_path"] = (path.c.cpu().numpy() if path is not None else None)  # 5 pts incl corner 0
     out["_waypoints"] = ([path.waypoints(i).cpu().numpy() for i in range(env.num_envs)]
                          if path is not None else None)
     out["_arrival"] = (path.arrival if path is not None else float(env.arrival))
@@ -531,8 +560,16 @@ def score(traj: dict, tol: float, hold_s: float, max_thrust: float, path=None,
     m["energy_j_proxy"] = 2.0 * max_thrust ** 2 * m["energy"]
     m["lap_pct"] = 100.0 * float(m["waypoints_reached"]) / len(waypoints) \
         if waypoints is not None and len(waypoints) else float("nan")
-    m.pop("time_to_waypoint", None)        # list per episode: counts live in the columns
+    m["time_to_waypoint"] = m.pop("time_to_waypoint", None)   # R5: exported, not aggregated
     return m
+TW_COLS = [f"time_to_waypoint_{k}" for k in range(1, 5)]   # R5: appended to the per-ep CSV only
+
+
+def tw_columns(m: dict) -> dict:
+    """`time_to_waypoint_1..4` (s, NaN when never reached) from a `score()` row."""
+    tw = list(m.get("time_to_waypoint") or [])
+    return {c: (float(tw[k - 1]) if k <= len(tw) else float("nan")) for k, c in
+            enumerate(TW_COLS, start=1)}
 
 
 def aggregate(per_ep: list[dict]) -> dict:
@@ -540,6 +577,8 @@ def aggregate(per_ep: list[dict]) -> dict:
     agg: dict[str, float] = {}
     if per_ep:
         for key in per_ep[0]:
+            if key == "time_to_waypoint":          # R5: list per episode, not aggregated
+                continue
             vals = np.array([m[key] for m in per_ep], dtype=np.float64)
             agg[key] = float(np.mean(vals))           # bool -> fraction of laps (R4)
             if key == "settling_time_s":
@@ -598,11 +637,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--square-side", type=float, default=SQUARE_SIDE_M)
     ap.add_argument("--square-hold", type=float, default=10.0,
                     help="seconds of station keeping at each corner")
+    ap.add_argument("--dwell-stay-factor", type=float, default=1.5,
+                    help="wp_square dwell hysteresis: once the dwell counter started below the "
+                         "arrival radius it keeps counting while within factor*arrival and only "
+                         "resets beyond that (default 1.5; 1.0 = no hysteresis)")
+    ap.add_argument("--episode-s", type=float, default=None,
+                    help="wp_square ONLY: episode length in s (default 200.0 = SCENARIOS)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out", default=str(ROOT / "results"))
     ap.add_argument("--no-plots", action="store_true")
     ap.add_argument("--tol", type=float, default=TOL_M)
-    ap.add_argument("--hold-s", type=float, default=HOLD_S)
+    ap.add_argument("--hold-s", type=float, default=HOLD_S,
+                    help="evalkit SETTLING hold time (default 5.0 s); NOT the corner dwell "
+                         "(that is --square-hold)")
     args = ap.parse_args(argv)
     if args.episodes != 1:
         # the measured episode is the first of a seed; only K=1 makes both controllers score
@@ -642,13 +689,16 @@ def main(argv: list[str] | None = None) -> int:
     # PID episodes DO converge, so a single batch would mis-report the baseline.
     rows = []
     for si, name in enumerate(names):
-        scen = SCENARIOS[name]
+        scen = dict(SCENARIOS[name])
+        if name == "wp_square" and args.episode_s is not None:    # wp_square only
+            scen["episode_s"] = float(args.episode_s)
         for k in range(args.seeds):
             seed = int(args.seed) + 1000 * si + k
             for kind in ("ppo", "pid"):
                 t0 = time.time()
                 rec = run_rollout(kind, policy, device, scen, seed, args.episodes, args.envs,
-                                  args.rough_scale, args.square_side, args.square_hold)
+                                  args.rough_scale, args.square_side, args.square_hold,
+                                  args.dwell_stay_factor)
                 meta = rec.pop("_meta")
                 path = rec.pop("_path", None)
                 wps = rec.pop("_waypoints", None)          # R4: [N][4,2] or None
@@ -665,7 +715,8 @@ def main(argv: list[str] | None = None) -> int:
                                   waypoints=None if wps is None else wps[i], arrival=arrival)
                         per_ep.append(m)
                         eps_rows.append({"scenario": name, "controller": kind,
-                                         "seed": seed, "episode": e, "env": i, **m})
+                                         "seed": seed, "episode": e, "env": i, **m,
+                                         **tw_columns(m)})      # R5: appended columns only
                 agg = aggregate(per_ep)
                 rows.append({"scenario": name, "controller": kind, "seed": seed,
                              "seeds": args.seeds, "episodes": args.episodes,
@@ -674,13 +725,18 @@ def main(argv: list[str] | None = None) -> int:
                              "wall_s": round(meta["wall_s"], 1),
                              "level": meta["level"], **agg})
                 write_csv(out_dir / f"{name}_{kind}_{seed}_per_episode.csv", eps_rows,
-                          ["scenario", "controller", "seed", "episode", "env"] + list(agg))
+                          ["scenario", "controller", "seed", "episode", "env"] + list(agg)
+                          + TW_COLS)          # R5: appended at the END, nothing reordered
+                fin = [[r[c] for r in eps_rows if np.isfinite(r[c])] for c in TW_COLS]
+                tw_mean = [float(np.mean(f)) if f else float("nan") for f in fin]
                 print(f"  {name:12s} {kind} seed {seed:5d} n_ep {len(per_ep)}/"
                       f"{meta['num_envs']} radial {agg.get('radial_error_mean', float('nan')):6.2f} m"
                       f" p95 {agg.get('radial_error_p95', float('nan')):6.2f} m settled "
                       f"{agg.get('settled_pct', 0.0):5.1f}% wp "
                       f"{agg.get('waypoints_reached', float('nan')):4.2f} lap "
-                      f"{agg.get('lap_pct', float('nan')):5.1f}% ({time.time() - t0:.0f} s)")
+                      f"{agg.get('lap_pct', float('nan')):5.1f}% ({time.time() - t0:.0f} s)"
+                      + ("" if not tw_mean else " tw "
+                         + str([None if np.isnan(t) else round(t, 1) for t in tw_mean])))
                 if not args.no_plots:
                     plots(out_dir, name, kind, ep, path, args.tol, meta["policy_dt"])
 
@@ -708,7 +764,13 @@ def main(argv: list[str] | None = None) -> int:
               cols + [c + "_sd" for c in METRIC_COLS])
     (out_dir / "summary.json").write_text(json.dumps(
         {"ckpt": str(ckpt_path), "steps": ck.get("steps"), "iteration": ck.get("iteration"),
-         "args": vars(args), "fast_env_parity": fast, "pooled": pooled, "per_seed": rows},
+         "args": vars(args), "fast_env_parity": fast, "pooled": pooled, "per_seed": rows,
+         # R5: effective wp_square parameters (args already carry the two flags)
+         "square": {"episode_s": float(SCENARIOS["wp_square"]["episode_s"])
+                    if args.episode_s is None else float(args.episode_s),
+                    "dwell_stay_factor": float(args.dwell_stay_factor),
+                    "square_hold_s": float(args.square_hold),
+                    "square_side_m": float(args.square_side)}},
         indent=1, default=str), encoding="utf-8")
     table = markdown(pooled, cols)
     print("\n" + table)

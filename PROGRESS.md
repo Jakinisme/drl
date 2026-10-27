@@ -736,5 +736,103 @@ about learning quality.
 
 ---
 
+## Fix unit R5 — training-loop hygiene + wp_square harness fix — 2026-10-27
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+191 passed, 15 warnings in 106.91s (0:01:46)
+```
+
+Files: `train.py`, `envs/asv_env.py`, `evaluate.py`, `tests/test_desync.py` (new, 5),
+`tests/test_train_loop.py` (new, 9), `tests/test_square_path.py` (new, 9),
+`reports/R5_A.md`, `reports/R5_BCD.md`, `reports/R5_E.md`. Reward untouched (frozen by R4);
+`tests/test_obs_parity.py` unchanged and passing.
+
+### A. Episode phase desync
+`AsvEnv.desync_episodes(generator)` sets `ep_step` to a uniform integer in `[0, max_steps)` from
+the trainer's own generator — state, goals, history and physics RNG untouched. Called once from
+`Trainer` after the initial reset. Verified independently: `ep_step` goes from a single value `0`
+to **3–1195 with 222 distinct values** at 256 envs, `reset(ids)` still yields 0, and a 1.5x
+`max_steps` run times out at **51 distinct step indices** (the sawtooth cause is gone).
+
+### B/C/D. Terminated vs truncated, resume state, honest logs
+- `done = timeout | outside`; geofence is a **true terminal** (no bootstrap), `ep_step >=
+  max_steps` is a **truncation** (bootstrap `gamma*V` from the pre-reset obs). Both set ->
+  terminated wins. `info` gains `terminated`, `truncated`, `terminal_obs`.
+- `terminal_obs = obs.clone()` is taken **one line before** the auto-reset, so it holds the
+  terminal observation, not the new episode's (verified by reading the order, not the report).
+- Checkpoints now store `env_total_steps` / `env_level_index` / `env_level_override`; `--resume`
+  restores them, a checkpoint without the keys loads with one warning, `--curriculum-level`
+  still overrides. Per-env episode state (`ep_step`, `wp_idx`, `final_latch`, `t_loop`) is
+  still NOT checkpointed — resume starts fresh episodes, by design.
+- New per-iteration logs: `ep_return_mean`, `ep_len_mean`, `arrivals_per_ep`,
+  `action_std_mean`. NaN when no episode finished that iteration.
+
+### E. wp_square harness bug (finding 4 CONFIRMED)
+R4's `SquarePath` set `done = done | leave` on **every** corner and then
+`goal_xy = where(done, c[:,1], ...)`, so after the first dwell `done` was never cleared,
+`holding` stayed True and the goal was **pinned to corner 1 for every env for the rest of the
+episode**. Evidence: of 64 complete episodes in `results_r4_5m`, **none** exceeded
+`waypoints_reached == 1` (PPO 27x1 / 5x0, PID 14x1 / 18x0). Fixed: `done` = lap finished only,
+holding uses the active corner `c[idx+1]`/`c[idx]`, the dwell counter restarts per corner,
+`_path` now includes corner 0 (**5 points**). New flags `--dwell-stay-factor` (default 1.5;
+1.0 = old radius test) and `--episode-s` (wp_square only), both recorded in `summary.json`.
+`time_to_waypoint_1..4` appended to the per-episode CSV only.
+
+### Re-evaluation of `runs/r4_5m/ckpt/ckpt_last.pt` (same checkpoint, 3 harnesses, seeds 1)
+
+| dataset | ctrl | radial mean | cross-track | waypoints_reached | lap % | lap_completed |
+|---|---|---|---|---|---|---|
+| `results_r4_5m` (R4 harness) | PPO | **5.46** | 4.75* | 0.84 | 21.1 | 0 |
+| `results_r4_5m` (R4 harness) | PID | 23.97 | 10.83* | 0.44 | 10.9 | 0 |
+| `results_r5_hyst10` (factor 1.0) | PPO | 7.29 | 0.94 | 1.50 | 37.5 | 0.25 |
+| `results_r5_hyst10` | PID | 32.36 | 9.79 | 0.25 | 6.25 | 0 |
+| `results_r5_hyst15` (factor 1.5) | PPO | 10.32 | 1.48 | **2.25** | **56.3** | 0.25 |
+| `results_r5_hyst15` | PID | 33.03 | 10.46 | 0 | 0 | 0 |
+
+\* `cross_track_rmse` from `results_r4_5m` was computed against a polyline **without leg 1** and
+is **not comparable** to the R5 values; the smaller R5 numbers are the different reference
+line, not a better policy.
+
+**The uncomfortable reading:** loosening dwell hysteresis raises `waypoints_reached`
+(0.84 -> 1.5 -> 2.25) while `radial_error_mean` gets **worse** (5.46 -> 7.29 -> 10.32 m). The
+policy does travel further along the lap, but it is not getting more accurate — it never
+completes more than one of four laps in any setting (`lap_completed` 0.25 both ways). The R4
+"radial 5.46 m" was partly an artefact of the pinned goal.
+
+`time_to_waypoint` (hyst15, PPO) = **[56.0, 126.8, 148.1, 171.6] s** in a 200 s episode: all four
+corners ARE entered, and the last is reached with 28 s to spare, yet `lap_completed` is still
+0.25. Reaching a corner is therefore not the same as completing its dwell — the policy touches
+the radius and leaves instead of holding for `--square-hold` (10 s). That is consistent with
+`w_arrival` being paid regardless of approach speed (R4 design, listed as report-only above) and
+it means the 0.25 lap rate is a **dwell** failure, not a navigation failure.
+
+### Orchestrator fixes and deviations
+- **Regression inherited from D, fixed inline:** `train.py` read `info["ep_step"]` unguarded, so
+  any CONTRACT §4.5-shaped env that omits it raised `KeyError`
+  (`tests/test_train_smoke.py::test_done_masking_and_reset_path` failed). Now guarded; `ep_len`
+  degrades to NaN instead of raising. Suite went 190 passed / 1 failed -> **191 passed**.
+- The R5 item-E sub-agent died on a provider error after writing `evaluate.py`,
+  `tests/test_square_path.py` and `reports/R5_E.md`, but before running `hyst15`; the
+  orchestrator ran it.
+- Two agents owned `envs/asv_env.py` and `train.py` concurrently (A and B/C/D). One reported its
+  files had briefly been mangled by the sibling. Verified clean afterwards: no `train_nodesync`
+  leftovers, all three modules import, `test_train_loop.py` 9 passed.
+- `tests/test_env_randomization.py` was NOT touched this wave (the R4 out-of-Owns edit was not
+  repeated).
+
+### Report-only, not fixed
+- `action_std_mean 0.601` vs `exp(-0.5) = 0.607` at init — the entropy rise seen in the 5M run
+  (2.98 vs ~2.76) is **not** explained by a stuck log_std; it needs a per-iteration trace.
+- gamma 0.99 vs 0.995, 10-step history vs GRU, `w_arrival` paid regardless of approach speed.
+- PPO still parks ~2.2–3 m from a waypoint (arrival radius 2.0 m) in `results_r4_5m_plot`. The
+  harness fix changes the **dwell outcome**, not the parking distance.
+- INSPECTION H6 (thruster geometry vs mixing matrix): the PID baseline still drifts north-west
+  in wp_square and remains an unfair comparison.
+
+**Status: R5 complete — 191 passed. Stopped at the gate; no training launched.**
+
+---
+
 **Nothing here was validated against the real vessel.** All numbers above are from
 commands run on the dev box; the physical model is placeholder-parameterised throughout.

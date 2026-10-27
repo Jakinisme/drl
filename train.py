@@ -122,6 +122,11 @@ class PPOTrainer:
         self.b_done = torch.zeros(shape, device=self.device, dtype=self.dtype)
 
         self.obs = self._to(self.env.reset())
+        # R5-A: stagger episode phase so the N envs do not all time out on one iteration.
+        # Dummy envs in tests have no phase counter -> optional method.
+        desync = getattr(self.env, "desync_episodes", None)
+        if desync is not None:
+            desync(self.gen)
         self.steps = 0
         self.it = 0
         self.history: list[dict] = []
@@ -145,20 +150,63 @@ class PPOTrainer:
     # --- rollout --------------------------------------------------------------
     def collect(self) -> dict:
         T, N = self.T, self.N
+        gamma = float(self.cfg["gamma"])
+        boot = torch.zeros(T, N, device=self.device, dtype=self.dtype)   # R5 timeout bootstrap
+        run_ret = torch.zeros(N, device=self.device, dtype=self.dtype)   # R5 per-env episode return
+        n_fin = 0
+        ep_ret, ep_len, n_arr = 0.0, 0.0, 0.0
         with torch.no_grad():
             for t in range(T):
                 action, logp, value = self.model.act(self.obs, generator=self.gen)
-                obs, rew, done, _info = self.env.step(action)
+                obs, rew, done, info = self.env.step(action)
+                rew = self._to(rew)
+                done_t = self._to(done).clamp_(0.0, 1.0)
+                run_ret += rew
+                # R5: time-limit truncation -> bootstrap gamma*V(terminal obs); geofence stays a
+                # true terminal. done stays 1 either way, so GAE never bleeds across episodes.
+                if info.get("terminated") is not None and info.get("truncated") is not None:
+                    trunc = self._to(info["truncated"]) * (1.0 - self._to(info["terminated"]))
+                    sel = trunc > 0.5
+                    if bool(sel.any()):
+                        term_obs = info.get("terminal_obs")
+                        term_obs = obs if term_obs is None else self._to(term_obs)
+                        _m, v_next, _s = self.model(term_obs[sel])
+                        boot[t, sel] = v_next.squeeze(-1).to(self.dtype)
+                self.obs = self._to(obs)
+                # R5 episode stats: episodes that FINISHED in this iteration
+                if "arrive_evt" in info:
+                    n_arr += float(self._to(info["arrive_evt"]).sum())
+                fin = done_t.nonzero(as_tuple=True)[0]
+                if fin.numel():
+                    n_fin += int(fin.numel())
+                    ep_ret += float(run_ret[fin].sum())
+                    # `ep_step` is optional: a CONTRACT §4.5-shaped dummy env (tests) may not
+                    # report it, so the length metric degrades to NaN instead of raising.
+                    if "ep_step" in info:
+                        ep_len += float(self._to(info["ep_step"])[fin].sum())
+                    else:
+                        ep_len = float("nan")
+                    run_ret[fin] = 0.0
                 self.b_obs[t] = self.obs
                 self.b_act[t] = action
                 self.b_logp[t] = logp
                 self.b_val[t] = value
-                self.b_rew[t] = self._to(rew)
-                self.b_done[t] = self._to(done).clamp_(0.0, 1.0)
-                self.obs = self._to(obs)
+                self.b_rew[t] = rew
+                self.b_done[t] = done_t
             _mean, last_val, _std = self.model(self.obs)
+        self.b_rew += gamma * boot
         self.steps += T * N
-        return self._gae(last_val.squeeze(-1))
+        stats = self._gae(last_val.squeeze(-1))
+        nan = float("nan")
+        stats.update({
+            "ep_return_mean": ep_ret / n_fin if n_fin else nan,
+            "ep_len_mean": ep_len / n_fin if n_fin else nan,
+            "arrivals_per_ep": n_arr / n_fin if n_fin else nan,
+            "action_std_mean": float(self.model.log_std.exp().mean()),
+            "episodes": float(n_fin),
+            "arrivals": n_arr,
+        })
+        return stats
 
     def _gae(self, last_val: torch.Tensor) -> dict:
         cfg = self.cfg
@@ -256,10 +304,13 @@ class PPOTrainer:
         # one stdout line per iteration: the smoke run is read from a log file (reports/C1.md)
         print(f"it {self.it:4d} steps {d['steps']:8d} reward {d['reward']:+.4f} "
               f"return {d['return']:+.3f} pi_loss {d['pi_loss']:+.4f} lr {d['lr']:.2e} "
-              f"steps/s {d['steps_per_s']:.0f}", flush=True)
+              f"steps/s {d['steps_per_s']:.0f} ep_ret {d.get('ep_return_mean', float('nan')):+.3f} "
+              f"ep_len {d.get('ep_len_mean', float('nan')):.1f} arrivals/ep {d.get('arrivals_per_ep', float('nan')):.3f} "
+              f"std {d.get('action_std_mean', float('nan')):.3f}", flush=True)
         if self.writer is None:
             return
-        for key in ("reward", "return", "pi_loss", "v_loss", "entropy", "kl", "clip_frac", "lr", "steps_per_s"):
+        for key in ("reward", "return", "pi_loss", "v_loss", "entropy", "kl", "clip_frac", "lr", "steps_per_s",
+                    "ep_return_mean", "ep_len_mean", "arrivals_per_ep", "action_std_mean"):
             if key in d:
                 self._log(f"train/{key}", d[key], self.steps)
         self._log("train/iteration", self.it, self.steps)
@@ -274,6 +325,10 @@ class PPOTrainer:
             "steps": self.steps,
             "iteration": self.it,
             "cfg": self.cfg,
+            # R5: curriculum state lives in the env, not in the trainer
+            "env_total_steps": int(getattr(self.env, "total_steps", 0)),
+            "env_level_index": int(getattr(self.env, "level_index", 0)),
+            "env_level_override": getattr(self.env, "_level_override", None),
         }, path)
         return path
 
@@ -285,6 +340,25 @@ class PPOTrainer:
         self.steps = int(ckpt.get("steps", 0))
         self.it = int(ckpt.get("iteration", 0))
         self.obs = self._to(self.env.reset())
+        if "env_total_steps" in ckpt:
+            self._apply_env_state(ckpt["env_total_steps"], ckpt.get("env_level_override"),
+                                  ckpt.get("env_level_index"))
+        else:
+            print(f"[warn] {path}: no env curriculum state (env_total_steps) in checkpoint; "
+                  f"env starts at total_steps={getattr(self.env, 'total_steps', 0)} "
+                  f"level={getattr(self.env, 'level_index', 0)}", flush=True)
+
+    def _apply_env_state(self, total_steps, level_override, level_index) -> None:
+        """Restore the env curriculum state saved by `save()` (level override wins)."""
+        env = self.env
+        if hasattr(env, "total_steps"):
+            env.total_steps = int(total_steps)
+        if hasattr(env, "_level_override"):
+            env._level_override = None if level_override is None else float(level_override)
+        if hasattr(env, "_sync_level"):
+            env._sync_level(force=True)
+        elif level_index is not None and hasattr(env, "set_curriculum"):
+            env.set_curriculum(float(level_index))
 
 
 def main(argv: list[str] | None = None) -> int:

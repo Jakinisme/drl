@@ -300,6 +300,20 @@ class AsvEnv:
         self.obs_buf[idx] = sample[idx].repeat(1, self.k)
         return self.obs_buf.clone() if full else self.obs_buf[idx].clone()
 
+    def desync_episodes(self, generator: torch.Generator) -> None:
+        """Training only (R5-A): stagger episode phase so the envs do not all time out on
+        the same iteration.
+
+        Sets `ep_step` per env to an independent uniform integer in `[0, max_steps)`.
+        State, goals, history and every physics RNG stream are untouched — only the
+        timeout counter moves, so each env now has its own remaining episode length.
+        Draws from `generator` (the trainer's own seeded one), NOT from `self._gen`,
+        so the physics randomisation stream is unaffected. `reset(ids)` still zeroes
+        `ep_step`, so evaluate.py keeps full-length episodes.
+        """
+        self.ep_step = torch.randint(0, self.max_steps, (self.num_envs,),
+                                     device=self.device, generator=generator)
+
     def _randomize(self, idx, k: int) -> None:
         """Per-env domain randomisation on reset (CONTRACT §3.4 randomization block)."""
         ms = 1.0 + self._unif(k) * self.r_mass
@@ -466,6 +480,10 @@ class AsvEnv:
         timeout = self.ep_step >= self.max_steps
         outside = self.state[:, :2].norm(dim=1) > self.geofence
         done = timeout | outside
+        # R5: geofence is a true terminal state (no bootstrap), the time limit a truncation
+        # (bootstrap from V(terminal obs)). Both set -> terminated wins.
+        terminated = outside
+        truncated = timeout & ~outside
 
         sample = self._sample(a_prev)      # obs carries a_{t-1}, as the runtime does
         self.prev_action = a.clone()       # last APPLIED action
@@ -483,6 +501,9 @@ class AsvEnv:
             "arrived": (d < self.arrival).to(self.dtype),
             "timeout": timeout.to(self.dtype),
             "geofence": outside.to(self.dtype),
+            "terminated": terminated,
+            "truncated": truncated,
+            "terminal_obs": obs.clone(),     # R5: pre-auto-reset obs (valid rows: done)
             "arrive_evt": arrive_evt.clone(),
             "wp_idx": self.wp_idx.clone(),
             "n_wp": self.n_wp.clone(),
