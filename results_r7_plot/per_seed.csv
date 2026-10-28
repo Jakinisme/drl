@@ -1,0 +1,3 @@
+scenario,controller,seed,seeds,episodes,n_episodes,n_envs,duration_s,level,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,energy_j_proxy,action_rate,settled_pct,waypoints_reached,lap_pct,lap_completed
+wp_square,ppo,0,1,1,4,4,199.9,1,13.3897,30.5776,31.7684,1.92939,inf,nan,342.229,65735.3,0.534739,75,3.75,93.75,0.75
+wp_square,pid,0,1,1,4,4,199.9,1,33.4037,43.8543,45.1316,10.4425,inf,nan,252.581,48515.8,1.10763,0,0,0,0

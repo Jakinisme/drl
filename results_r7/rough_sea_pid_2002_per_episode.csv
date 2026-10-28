@@ -1,0 +1,5 @@
+scenario,controller,seed,episode,env,n_samples,duration_s,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,action_rate,waypoints_reached,lap_completed,settled_pct,energy_j_proxy,lap_pct,n_episodes,time_to_waypoint_1,time_to_waypoint_2,time_to_waypoint_3,time_to_waypoint_4
+rough_sea,pid,2002,0,3,1200,119.9,60.0006,78.8335,79.93,61.7106,inf,,261.388,0.99112,nan,False,0,50207.4,nan,,nan,nan,nan,nan
+rough_sea,pid,2002,0,4,1200,119.9,19.5502,38.2989,40.1612,22.7526,inf,,151.685,1.07964,nan,False,0,29135.7,nan,,nan,nan,nan,nan
+rough_sea,pid,2002,0,5,1200,119.9,66.0048,93.9336,97.2893,68.0362,inf,,255.061,1.19643,nan,False,0,48992.1,nan,,nan,nan,nan,nan
+rough_sea,pid,2002,0,7,1200,119.9,57.2243,63.488,64.5314,57.334,inf,,138.959,1.28704,nan,False,0,26691.3,nan,,nan,nan,nan,nan

@@ -198,8 +198,18 @@ class AsvEnv:
         self.scale_by_level = [float(v) for v in cur.get("scale_by_level", [0.0])]
         self.n_levels = len(self.scale_by_level)
         self.start_level = int(cfg["curriculum"]["start_level"])
-        self.level_up_steps = max(1, int(round(
-            float(cfg["curriculum"]["level_up_fraction"]) * self.max_steps)))
+        # Curriculum clock. `env.total_steps` counts ENV-STEPS (calls x num_envs), and
+        # `level_up_fraction` is a fraction of the PLANNED TRAINING BUDGET in env-steps, so
+        # every level gets an equal slice of the run. Before R6 this compared a per-call
+        # counter against `fraction * max_steps`, which advanced the curriculum ~num_envs
+        # times too fast: the 100M run reached level 5 of 6 after 0.05% of its budget and
+        # its reward collapsed from 0.875 to 0.49 right there (PROGRESS.md, R6).
+        frac = float(cfg["curriculum"]["level_up_fraction"])
+        budget = cfg["curriculum"].get("total_train_steps")
+        if budget is None:                      # stand-alone env (tests, evaluate.py)
+            budget = float(self.max_steps) * self.num_envs
+        span = max(1.0, (self.n_levels - self.start_level) * frac)
+        self.level_up_steps = max(1, int(round(float(budget) / span)))
         self._level_override = None
         self.level_index = min(self.start_level, self.n_levels - 1)
 
@@ -466,7 +476,7 @@ class AsvEnv:
             self.state = self.dynamics.step(self.state, tau, self.dt)
             self.meas = self.sensors.step(self.state, self.dt)
         self.t_loop += self.policy_dt
-        self.total_steps += 1
+        self.total_steps += self.num_envs      # env-steps, not calls (see ctor comment)
         self.ep_step += 1
         d_prog = (goal0 - self.state[:, :2]).norm(dim=1)
 

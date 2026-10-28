@@ -834,5 +834,92 @@ it means the 0.25 lap rate is a **dwell** failure, not a navigation failure.
 
 ---
 
+## Fix unit R6 — curriculum clock was ~num_envs too fast (the 100M run's collapse) — 2026-10-27
+
+```
+cd /e/buoy-project/drl && .venv/Scripts/python.exe -m pytest tests -q
+191 passed, 15 warnings in 243.02s (0:04:03)
+```
+
+Files: `envs/asv_env.py`, `configs/env.yaml`, `train.py`. Reward untouched; observation
+layout untouched; `tests/test_obs_parity.py` unchanged.
+
+### The 100M run (`runs/r6_100m`, 99,942,400 steps, 1,525 iterations) did NOT improve
+
+| iterations | reward mean |
+|---|---|
+| 0–100 | 0.258 |
+| 100–200 | 0.700 |
+| 200–300 | **0.875 (peak)** |
+| 300–800 | 0.49–0.58 |
+| 1400–1525 | 0.62–0.64 |
+
+Reward fell off its own peak and never returned; entropy rose 2.76 -> 3.06 (policy got MORE
+random), and `lr` annealed to 0.0. That is a broken learning schedule, not a converged one.
+
+### Root cause — the curriculum clock compared the wrong units
+
+`env.total_steps` incremented **1 per `step()` call** (32 policy steps per call), but
+`level_up_steps = level_up_fraction * max_steps = 2.5 * 1200 = 3000`. So the six disturbance
+levels were exhausted after 15,000 calls = 480,000 env-steps = **0.5 % of a 100M run**. The
+checkpoint confirms it: `env_total_steps = 48,800` already sat at `env_level_index 5` (full
+disturbance, scale 1.0) — right where the reward collapsed at ~iteration 230. The policy was
+thrown at maximum wind/current/waves before it had mastered the calm case.
+
+### Fix — `level_up_fraction` is now a fraction of the training budget
+
+- `env.total_steps` counts **env-steps** (`+= num_envs` per call), matching the trainer's own
+  `steps += T*N` counter and `total_steps` (which is ALREADY the env-step budget).
+- `level_up_steps = total_train_steps / ((n_levels - start_level) * level_up_fraction)`, so
+  every level gets an equal slice of the planned run. `total_train_steps` is injected by
+  `train.py` from `cfg["total_steps"]`; a stand-alone env (tests, evaluate.py) falls back to
+  `max_steps * num_envs`.
+- `configs/env.yaml`: `level_up_fraction 2.5 -> 1.0`, `total_train_steps: null`. `CONTRACT.md`
+  §3.4 still says `0.6` — the yaml value is the source of truth until the contract text is
+  reconciled (carry-forward).
+
+Before vs after on a 100M run:
+
+| level (scale) | old | new |
+|---|---|---|
+| 1 (0.1) | 0.6M env-steps | **16.7M** |
+| 3 (0.5) | 1.8M | **50M** |
+| 5 (1.0) | 3.1M (3 %) | **83M** |
+
+### The real ASV log (`/e/buoy-project/asv.log`) — sensor dead, not a PID bug
+
+The user's field log shows the ASV heading "kebalik-kebalik" (reversed). It is NOT a sign
+flip. 3,836 lines, and:
+
+```
+ERROR imu | MPU6050 init failed after 3 attempts: [Errno 121] Remote I/O error
+ERROR mag | QMC5883P init failed: [Errno 121] Remote I/O error
+GPS fix=True sats=12
+```
+
+Errno 121 = EREMOTEIO = the I2C bus returns nothing. GPS (UART) is healthy; both heading
+sensors (I2C) are dead. Consequence in the log: `heading=0.0` frozen for 371 lines (the
+default), and yaw command saturated at `Y=1.000` 192x and `Y=-1.000` 156x — the PID chases a
+heading error that never shrinks, so it hard-overs left/right. Also one GPS glitch line
+(`lon=33.59` among `111.95` neighbours) — a single wild sample.
+
+The user says the last log is the healthy one and the early failures were miswiring — i.e.
+the I2C issue is already fixed on the bench. Do NOT flip any sign to "fix" the reversed
+heading: the heading was never read. Diagnose the sensors first, then the PID.
+
+### Thruster upgrade — do not touch the sim yet
+
+The user wants ~900 g (~8.83 N) per thruster. The sim currently assumes
+`max_thrust_fwd_n = 9.8`, `max_thrust_rev_n = 4.9` (both `TODO SYSID`, never measured). 900 g
+is LOWER than the assumed 9.8 N, so if that is the real bollard pull the sim must go DOWN to
+~8.83 N, not up — a policy trained on 9.8 N assumes thrust the boat does not have. **Bollard
+pull is unmeasured (SYSID B7); no sim value may change until it is bench-measured.** Do not
+edit vehicle.yaml on a guess.
+
+**Status: R6 complete — 191 passed. Curriculum fixed; retrain is the human's to launch (not
+started here).**
+
+---
+
 **Nothing here was validated against the real vessel.** All numbers above are from
 commands run on the dev box; the physical model is placeholder-parameterised throughout.

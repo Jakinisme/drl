@@ -482,13 +482,94 @@ class SquarePath:
         return torch.stack([goal_xy[:, 0], goal_xy[:, 1], env.psi_goal, env.mode], dim=1)
 
 
+# --------------------------------------------------------------------------- conditions
+def capture_conditions(env: AsvEnv, path) -> dict[str, torch.Tensor]:
+    """Per-env condition snapshot of the CURRENT episode (call right after `env.reset()`).
+
+    Reads the spawn pose/heading off `env.state`, the wind/current/wave draws off
+    `env.disturbance`, and the domain-randomisation draws off `env.dynamics`,
+    `env.thrusters` and `env.sensors` — all live per-env tensors written by the reset
+    path, so this is the exact value the episode runs with.  Returns [N] / [N,k] torch
+    tensors on `env.device` (the caller `.cpu()`s them).  `path` is the `SquarePath`
+    (or None) so the "bearing to corner 1" column has something to point at.
+    """
+    n = env.num_envs
+    d = env.disturbance
+    thr = env.thrusters
+    dyn = env.dynamics
+    sen = env.sensors
+    s = env.state
+    # spawn pose + heading (state[:, :3])
+    spawn_x, spawn_y, spawn_psi = s[:, 0], s[:, 1], s[:, 2]
+    # bearing to corner 1 = planned square corner 1 (30 m east of spawn) when square;
+    # otherwise the episode's current goal.  Heading error = wrap_pi(bearing - psi).
+    if path is not None:
+        c1 = path.c[:, 1]                       # [N, 2] corner 1
+    else:
+        c1 = env.goal_xy
+    dxy = c1 - s[:, :2]
+    bearing = torch.atan2(dxy[:, 0], dxy[:, 1])           # compass bearing (CONTRACT §1)
+    head_err = torch.remainder(bearing - spawn_psi + math.pi, 2 * math.pi) - math.pi
+    # wind / current / waves
+    wind_speed, wind_dir = d.wind_speed, d.wind_dir         # rad compass, speed m/s
+    cur_enu = d.current_enu                                # [2], e/n
+    cur_speed = cur_enu.norm()                             # m/s (config value, not per-env)
+    cur_dir = torch.atan2(cur_enu[0], cur_enu[1])          # compass rad
+    wave_dir = d.wave_dir                                  # rad compass
+    # physics randomisation (per-env tensors)
+    mass = dyn.M_env[:, :2].mean(dim=1)                    # M(x,y) after mass_scale
+    inertia = dyn.M_env[:, 2]                              # M(n) after inertia_scale
+    drag = dyn.D_lin_env.mean(dim=1)                       # D_lin after drag_scale
+    # scale factors vs nominal (dyn.M / dyn.D_lin are the nominal [3] vectors)
+    mass_scale = mass / dyn.M[:2].mean()
+    inertia_scale = inertia / dyn.M[2]
+    drag_scale = drag / dyn.D_lin.mean()
+    # thruster draws: scale_fwd/rev [N,4], lag [N,1], deadband [N,1]; weakened motor
+    # is the one whose fwd scale dropped by weak_frac (or -1 if none)
+    sf, sr = thr.scale_fwd, thr.scale_rev
+    lag, db = thr.lag_tau[:, 0], thr.deadband[:, 0]
+    # a "weakened" motor is scaled by weak_frac (env.yaml randomization.weak_factor, ~0.6),
+    # far below the 1 +/- thruster_gain band a normal gain draw lands in.
+    weak_thr = 0.5 * (1.0 + float(getattr(env, "weak_frac", 0.6))) - 0.02
+    weak_mask = sf < (thr.nominal["scale_fwd"].max() * weak_thr)
+    weak_motor = torch.where(weak_mask.any(dim=1),
+                             weak_mask.float().argmax(dim=1).float(),
+                             torch.full((n,), -1.0, device=env.device))
+    # sensor draws
+    out = dict(
+        spawn_x=spawn_x, spawn_y=spawn_y, spawn_psi=spawn_psi,
+        bearing_c1=bearing, heading_err=head_err,
+        wind_speed=wind_speed, wind_dir=wind_dir,
+        cur_speed=cur_speed.expand(n), cur_dir=cur_dir.expand(n), wave_dir=wave_dir,
+        mass_scale=mass_scale, inertia_scale=inertia_scale, drag_scale=drag_scale,
+        thr_fwd_mean=sf.mean(dim=1), thr_rev_mean=sr.mean(dim=1),
+        thr_lag=lag, thr_deadband=db, weak_motor=weak_motor,
+        gps_pos_sigma=sen.pos_sigma_env, gps_latency=sen.latency_env,
+        mag_bias=sen.mag_bias_max_env, gyro_bias=sen.gyro_bias_max_env,
+    )
+    # per-motor forward scales, so "which thruster is weakened and by how much" is
+    # visible (a weakened motor's scale = weak_frac, the others ~1 +/- thruster_gain)
+    for j in range(sf.shape[1]):
+        out[f"thr_fwd_{j}"] = sf[:, j]
+    return out
+
+
 # --------------------------------------------------------------------------- rollout
 @torch.no_grad()
 def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
                 episodes: int, num_envs: int, rough_scale: float,
                 square_side: float = SQUARE_SIDE_M, hold_s: float = 10.0,
-                dwell_stay: float = 1.5) -> dict:
-    """Simulate `episodes` episodes on `num_envs` envs; return the [T, N, ...] record."""
+                dwell_stay: float = 1.5, dump: bool = False) -> dict:
+    """Simulate `episodes` episodes on `num_envs` envs; return the [T, N, ...] record.
+
+    `dump=True` (--dump-conditions) additionally records, per step, the observation the
+    policy saw (`obs` [T,N,150]), the raw policy action before the env's rate clamp
+    (`action_raw` [T,N,3], the deterministic tanh mean), the policy log_std [3], the
+    applied action (`action`, already recorded), and `mode` (already recorded); and, per
+    episode, the condition snapshot of `capture_conditions` keyed by the episode's start
+    step.  These ride in `rec["_dump"]` so the main path stays byte-compatible when the
+    flag is off.
+    """
     cfg = env_cfg(physics_randomize=not scen.get("pid_soft", False))
     cfg["num_envs"] = int(num_envs)
     cfg["episode_s"] = float(scen["episode_s"])
@@ -504,6 +585,12 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     rec: dict[str, list[torch.Tensor]] = {k: [] for k in
                                           ("xy", "goal_xy", "psi", "action", "ep_step",
                                            "timeout", "geofence", "mode", "reward")}
+    if dump:
+        # extra per-step tracks (only allocated when --dump-conditions is on)
+        rec["obs"] = []
+        rec["action_raw"] = []      # pre-clamp tanh mean, before the env's rate limit
+        cond_eps: list[dict] = []   # one dict per (episode, env) with captured conditions
+    log_std = None                  # [3] policy log_std (constant per rollout), numpy
     t_wall = time.time()
     path = None
     for _ep in range(int(episodes)):
@@ -511,6 +598,13 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
         ctrl = make_controller(kind, policy, device, scen, env.policy_dt)
         path = (SquarePath(env, square_side, hold_s, dwell_stay)
                 if scen["square"] else None)
+        # capture the episode's conditions AFTER SquarePath, so the spawn pose, the
+        # randomisation draws and the corner list all match what the episode runs with
+        if dump:
+            cond = {k: v.cpu().numpy() for k, v in capture_conditions(env, path).items()}
+            for i in range(B):
+                cond_eps.append({**{k: float(v[i]) for k, v in cond.items()},
+                                 "episode": _ep, "env": i})
         for _k in range(T):
             est = env.meas["est"]
             if path is not None:
@@ -522,6 +616,9 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
             if kind == "ppo":
                 ctrl.obs = obs                    # type: ignore[attr-defined]
             act = ctrl.act(est, goal, env.prev_action)
+            if dump:
+                rec["obs"].append(obs.clone())
+                rec["action_raw"].append(act.detach().clone())   # tanh mean, pre rate-limit
             obs, rew, _done, info = env.step(act)
             rec["xy"].append(info["xy"])
             rec["goal_xy"].append(info["goal_xy"])
@@ -532,6 +629,9 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
             rec["geofence"].append(info["geofence"])
             rec["mode"].append(info["mode"])
             rec["reward"].append(rew)
+        if dump and kind == "ppo":
+            # state-independent log_std, one triple for the whole rollout
+            log_std = policy.log_std.detach().cpu().numpy()
     out = {k: torch.stack(v).cpu().numpy() for k, v in rec.items()}
     out["_meta"] = dict(wall_s=time.time() - t_wall, max_steps=T, num_envs=B,
                         policy_dt=env.policy_dt, level=env._level_value())
@@ -539,6 +639,9 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     out["_waypoints"] = ([path.waypoints(i).cpu().numpy() for i in range(env.num_envs)]
                          if path is not None else None)
     out["_arrival"] = (path.arrival if path is not None else float(env.arrival))
+    if dump:
+        out["_conditions"] = cond_eps          # [episodes * num_envs] dicts
+        out["_log_std"] = log_std              # numpy [3] or None (PID)
     env.close()
     return out
 
@@ -643,6 +746,16 @@ def main(argv: list[str] | None = None) -> int:
                          "resets beyond that (default 1.5; 1.0 = no hysteresis)")
     ap.add_argument("--episode-s", type=float, default=None,
                     help="wp_square ONLY: episode length in s (default 200.0 = SCENARIOS)")
+    ap.add_argument("--dump-conditions", action="store_true",
+                    help="write <scenario>_<ctrl>_conditions.csv (one row per seed/env with "
+                         "spawn pose, heading error, wind/current/wave draws and every "
+                         "randomised parameter) plus a per-seed .npz of the raw trajectories "
+                         "and, for failing episodes, the first 200 steps of obs/action/log_std")
+    ap.add_argument("--plot-env", type=int, default=None,
+                    help="force the overlay plot to a specific env index")
+    ap.add_argument("--plot-seed", type=int, default=None,
+                    help="force the overlay plot to a specific seed index (0-based within a "
+                         "scenario; requires --plot-env)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out", default=str(ROOT / "results"))
     ap.add_argument("--no-plots", action="store_true")
@@ -688,6 +801,7 @@ def main(argv: list[str] | None = None) -> int:
     # one seed.  Several seeds: a 4-env sample is a smoke number, and C1 showed a handful of
     # PID episodes DO converge, so a single batch would mis-report the baseline.
     rows = []
+    all_cond: dict[tuple[str, str], list[dict]] = {}   # R6: (scenario, ctrl) -> rows across seeds
     for si, name in enumerate(names):
         scen = dict(SCENARIOS[name])
         if name == "wp_square" and args.episode_s is not None:    # wp_square only
@@ -698,12 +812,22 @@ def main(argv: list[str] | None = None) -> int:
                 t0 = time.time()
                 rec = run_rollout(kind, policy, device, scen, seed, args.episodes, args.envs,
                                   args.rough_scale, args.square_side, args.square_hold,
-                                  args.dwell_stay_factor)
+                                  args.dwell_stay_factor, dump=args.dump_conditions)
                 meta = rec.pop("_meta")
                 path = rec.pop("_path", None)
                 wps = rec.pop("_waypoints", None)          # R4: [N][4,2] or None
                 arrival = rec.pop("_arrival", 2.0)
+                cond = rec.pop("_conditions", None)        # R6: list of per-(ep,env) dicts
+                log_std = rec.pop("_log_std", None)        # R6: [3] numpy or None
                 ep = episode_arrays(rec, meta["max_steps"], args.episodes)
+                if cond is not None:
+                    # default outcomes for every (episode, env); the scoring loop overwrites
+                    # the ones it can score.  An incomplete episode (geofence exit) keeps
+                    # nan outcomes but always has its condition columns (no NaN there).
+                    for c in cond:
+                        c.setdefault("waypoints_reached", float("nan"))
+                        c.setdefault("lap_completed", False)
+                        c.setdefault("radial_error_max", float("nan"))
                 per_ep, eps_rows = [], []
                 for e in range(ep["xy"].shape[0]):
                     for i in range(ep["xy"].shape[1]):
@@ -717,6 +841,13 @@ def main(argv: list[str] | None = None) -> int:
                         eps_rows.append({"scenario": name, "controller": kind,
                                          "seed": seed, "episode": e, "env": i, **m,
                                          **tw_columns(m)})      # R5: appended columns only
+                        if cond is not None:
+                            # conditions captured at the start of this (episode, env): attach
+                            # the episode's outcomes to the same row for the correlation dump
+                            cj = cond[e * ep["xy"].shape[1] + i]
+                            cj["waypoints_reached"] = m["waypoints_reached"]
+                            cj["lap_completed"] = m["lap_completed"]
+                            cj["radial_error_max"] = m["radial_error_max"]
                 agg = aggregate(per_ep)
                 rows.append({"scenario": name, "controller": kind, "seed": seed,
                              "seeds": args.seeds, "episodes": args.episodes,
@@ -727,6 +858,18 @@ def main(argv: list[str] | None = None) -> int:
                 write_csv(out_dir / f"{name}_{kind}_{seed}_per_episode.csv", eps_rows,
                           ["scenario", "controller", "seed", "episode", "env"] + list(agg)
                           + TW_COLS)          # R5: appended at the END, nothing reordered
+                if cond is not None:
+                    # R6: --dump-conditions.  ONE <scenario>_<ctrl>_conditions.csv per
+                    # (scenario, controller) covering EVERY seed (one row per seed x env), so
+                    # the seed loop must accumulate instead of overwriting.  Rows were filled
+                    # with outcomes above; incomplete episodes keep nan outcomes but always
+                    # carry their condition columns.
+                    all_cond.setdefault((name, kind), []).extend(
+                        {"scenario": name, "controller": kind, "seed": seed,
+                         "episode": c["episode"], "env": c["env"], **c} for c in cond)
+                    # raw trajectories + failing-episode obs/action (per seed -> per-seed npz)
+                    _write_dump_npz(out_dir, name, kind, seed, rec, ep, meta, path,
+                                    args.dump_conditions, log_std)
                 fin = [[r[c] for r in eps_rows if np.isfinite(r[c])] for c in TW_COLS]
                 tw_mean = [float(np.mean(f)) if f else float("nan") for f in fin]
                 print(f"  {name:12s} {kind} seed {seed:5d} n_ep {len(per_ep)}/"
@@ -738,7 +881,16 @@ def main(argv: list[str] | None = None) -> int:
                       + ("" if not tw_mean else " tw "
                          + str([None if np.isnan(t) else round(t, 1) for t in tw_mean])))
                 if not args.no_plots:
-                    plots(out_dir, name, kind, ep, path, args.tol, meta["policy_dt"])
+                    plots(out_dir, name, kind, ep, path, args.tol, meta["policy_dt"],
+                          seed_index=k, force_env=args.plot_env, force_seed=args.plot_seed)
+
+    # ---- R6: one conditions CSV per (scenario, controller) covering every seed
+    for (name, kind), cond_rows in all_cond.items():
+        cond_cols = (["scenario", "controller", "seed", "episode", "env"]
+                     + [k for k in cond_rows[0]
+                        if k not in ("scenario", "controller", "seed", "episode", "env")])
+        write_csv(out_dir / f"{name}_{kind}_conditions.csv", cond_rows, cond_cols)
+        print(f"wrote {name}_{kind}_conditions.csv ({len(cond_rows)} rows)")
 
     # ---- pooled over seeds: mean of the per-seed episode means + spread
     pooled = []
@@ -787,24 +939,128 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def plots(out_dir: Path, name: str, kind: str, ep: dict, path, tol: float, dt: float) -> None:
-    """Trajectory + error plot of the FIRST complete episode (evalkit.plots)."""
-    from evalkit.plots import plot_error, plot_trajectory
-    tr = None
+def _write_dump_npz(out_dir: Path, name: str, kind: str, seed: int, rec: dict,
+                    ep: dict, meta: dict, path, dump: bool, log_std=None) -> None:
+    """`<scenario>_<ctrl>_seed<S>.npz`: raw trajectories for replotting + the observation /
+    action dump.  Trajectory arrays are [E, N, T, ...] (NaN padded); the observation stream
+    `obs` [T, N, 150] and the pre-clamp `action_raw` [T, N, 3] are stored whole (the report
+    slices the first 200 steps of the failing envs).  `_failing` lists (episode, env,
+    complete) for every non-clean episode so a replot can locate the failures without
+    rerunning the 15-minute eval.
+    """
+    if not dump:
+        return
+    dt = meta["policy_dt"]
+    npz = {}
+    for key in ("xy", "goal_xy", "psi", "action", "mode"):
+        if key in ep:
+            npz[key] = ep[key]
+    npz["_path"] = path if path is not None else np.zeros((0, 2))
+    fails = []
     for e in range(ep["xy"].shape[0]):
         for i in range(ep["xy"].shape[1]):
+            complete = ep["complete"][e, i]
+            if not complete or clean_episode(ep, e, i, dt) is None:
+                fails.append((e, i, int(bool(complete))))
+    npz["_failing"] = np.array(fails, dtype=np.int64).reshape(-1, 3)
+    obs = rec.get("obs")
+    araw = rec.get("action_raw")
+    if obs is not None:
+        npz["obs"] = obs                    # [T, N, 150], as the policy saw it
+        npz["action_raw"] = araw            # [T, N, 3], pre-clamp tanh mean
+        npz["log_std"] = (np.zeros(3, dtype=np.float32) if log_std is None
+                          else np.asarray(log_std, dtype=np.float32))   # [3], constant
+    np.savez_compressed(out_dir / f"{name}_{kind}_seed{seed}.npz", **npz)
+
+
+def plots(out_dir: Path, name: str, kind: str, ep: dict, path, tol: float, dt: float,
+          seed_index: int = 0, force_env: int | None = None,
+          force_seed: int | None = None) -> None:
+    """Per-seed overlay plots + best/median/worst tracks, ranked by `waypoints_reached`.
+
+    Spec (R6): filenames carry the seed `<scenario>_<ctrl>_seed<S>_{best,median,worst}_
+    {track,error}.png`, ranked by `waypoints_reached` (ties -> lower `radial_error_mean`);
+    the old `<scenario>_<ctrl>_track.png`/`_error.png` are written for the LAST seed so
+    existing tooling keeps working.  One overlay plot per seed colours every env's track by
+    `waypoints_reached`, labels the env index at the start, and draws the planned square
+    (5 points).  `force_env`/`force_seed` pin one episode and put it in the title.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from evalkit.metrics import waypoint_progress
+
+    E, N = ep["xy"].shape[0], ep["xy"].shape[1]
+    # collect one clean episode per env with its ranking key
+    eps: list[dict] = []
+    for e in range(E):
+        for i in range(N):
             tr = clean_episode(ep, e, i, dt)
-            if tr is not None:
-                p = path[i] if path is not None else None
-                if p is not None:
-                    tr["path"] = p
-                break
-        if tr is not None:
-            break
-    if tr is None:
+            if tr is None:
+                continue
+            p = path[i] if path is not None else None
+            if p is not None:
+                tr["path"] = p
+            # waypoints_reached via the metric (ties -> radial_error_mean)
+            wp = (waypoint_progress(tr["t"], tr["xy"], tr["goal_xy"], p)
+                  if p is not None else {"waypoints_reached": float("nan"),
+                                         "lap_completed": False})
+            err = np.sqrt(((tr["xy"] - tr["goal_xy"]) ** 2).sum(-1))
+            tr["_wp"] = int(wp["waypoints_reached"])
+            tr["_err"] = float(err.mean())
+            tr["_lap"] = bool(wp["lap_completed"])
+            tr["_e"], tr["_i"] = e, i
+            eps.append(tr)
+    if not eps:
         return
-    plot_trajectory(tr, out=str(out_dir / f"{name}_{kind}_track.png"))
-    plot_error(tr, tol=tol, out=str(out_dir / f"{name}_{kind}_error.png"))
+    # overlay plot: one per seed, all envs coloured by waypoints_reached
+    if force_env is not None and force_seed is not None and force_seed == seed_index:
+        sel = [t for t in eps if t["_i"] == force_env]
+    elif force_env is not None and force_seed is None:
+        sel = [t for t in eps if t["_i"] == force_env]
+    else:
+        sel = eps
+    if sel:
+        fig, ax = plt.subplots(figsize=(6, 6))
+        cmap = plt.get_cmap("viridis")
+        wpmax = max(t["_wp"] for t in sel) or 1
+        for tr in sel:
+            c = cmap(tr["_wp"] / wpmax)
+            ax.plot(tr["xy"][:, 0], tr["xy"][:, 1], lw=0.9, color=c)
+            ax.text(tr["xy"][0, 0], tr["xy"][0, 1], str(tr["_i"]), fontsize=7)
+        if path is not None and len(sel):
+            p = sel[0].get("path")
+            if p is not None:
+                ax.plot(p[:, 0], p[:, 1], "k--", lw=0.8, label="planned square")
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlabel("east [m]"); ax.set_ylabel("north [m]")
+        ax.grid(alpha=0.3)
+        title = f"seed {seed_index} env overlay ({name}/{kind})"
+        if force_env is not None:
+            t = sel[0] if sel else None
+            title = f"seed {seed_index} env {force_env}, waypoints {t['_wp']}, " \
+                    f"{'lap completed' if t and t['_lap'] else 'no lap'}"
+        ax.set_title(title)
+        fig.tight_layout()
+        fig.savefig(out_dir / f"{name}_{kind}_seed{seed_index}_overlay.png", dpi=120)
+        plt.close(fig)
+    # best / median / worst, ranked by waypoints_reached (ties: lower radial_error_mean)
+    ranked = sorted(eps, key=lambda t: (t["_wp"], -t["_err"]))
+    order = {"best": ranked[-1], "median": ranked[len(ranked) // 2], "worst": ranked[0]}
+    for tag, tr in order.items():
+        from evalkit.plots import plot_error, plot_trajectory
+        base = f"{name}_{kind}_seed{seed_index}_{tag}"
+        fig = plot_trajectory(tr, out=str(out_dir / f"{base}_track.png"))
+        plt.close(fig)
+        fig = plot_error(tr, tol=tol, out=str(out_dir / f"{base}_error.png"))
+        plt.close(fig)
+    # legacy names: written on every call, so the LAST seed of the loop overwrites them —
+    # exactly the pre-R6 behaviour existing tooling relies on (reports/C2.md filenames).
+    from evalkit.plots import plot_error as _pe, plot_trajectory as _pt
+    fig = _pt(ranked[-1], out=str(out_dir / f"{name}_{kind}_track.png"))
+    plt.close(fig)
+    fig = _pe(ranked[-1], tol=tol, out=str(out_dir / f"{name}_{kind}_error.png"))
+    plt.close(fig)
 
 
 if __name__ == "__main__":

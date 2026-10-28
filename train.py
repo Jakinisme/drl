@@ -89,6 +89,13 @@ def build_env(cfg: dict):
     # TODO(B2): the ctor belongs to B1; CONTRACT §4.5 pins attributes, not the signature.
     # This call matches envs/asv_env.py as landed (vehicle/disturbance/sensors configs
     # default to the same files named in configs/train.yaml).
+    # R6: hand the curriculum its budget in ENV-STEPS so `level_up_fraction` is a fraction
+    # of the actual run, not of max_steps (see the ctor comment in envs/asv_env.py).
+    # `total_steps` is ALREADY the env-step budget (the trainer accumulates T*N per
+    # iteration), so do NOT multiply it by num_envs.
+    env_cfg.setdefault("curriculum", {})
+    if env_cfg["curriculum"].get("total_train_steps") is None:
+        env_cfg["curriculum"]["total_train_steps"] = int(cfg["total_steps"])
     return AsvEnv(env_cfg, num_envs=int(cfg["num_envs"]), device=str(cfg["device"]),
                   dtype=DTYPES[cfg["dtype"]], seed=int(cfg["seed"]))
 
