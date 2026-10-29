@@ -1,0 +1,202 @@
+"""Collect A1 results into reports/AUTO_TABLES.md mechanically.
+
+Task A1 requires that every number in the final report comes from a file in the repo and is
+cited by path. This tool walks the `results_*` directories, reads `summary.json` (the
+authoritative per-run record) and emits markdown tables plus the path each row came from, so
+nothing has to be retyped from memory.
+
+Usage:
+    python tools/collect_results.py                      # all results_a1_* dirs
+    python tools/collect_results.py --dirs results_a1_r8_A_S results_a1_r8_A_C
+    python tools/collect_results.py --out reports/AUTO_TABLES.md
+
+Design notes:
+  * Reads summary.json, never summary.csv: the json keeps the exact args, the level, the
+    episode lengths and the per-seed rows, so a table can be traced back to its run.
+  * PPO rows only by default. PID rows are checkpoint-independent and identical across arms,
+    so including them would repeat the same numbers once per arm and invite misreading them
+    as a per-arm result. `--include-pid` opts in.
+  * Columns are fixed here so the table shape cannot silently change between runs.
+  * A missing directory or a missing metric is reported as `-`, never skipped silently.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+#: (column header, json key in the pooled/per_seed row)
+COLS: list[tuple[str, str]] = [
+    ("scenario", "scenario"),
+    ("ctl", "controller"),
+    ("settled%", "settled_pct"),
+    ("hold_rms_m", "hold_rms_m"),
+    ("hold_p95_m", "hold_p95_m"),
+    ("wps", "waypoints_reached"),
+    ("lap%", "lap_pct"),
+    ("lap_done", "lap_completed"),
+    ("sat_frac", "sat_frac"),
+    ("rev_rate", "reversal_rate"),
+    ("arr_v", "arrival_speed_mean_mps"),
+    ("radial_m", "radial_error_mean"),
+    ("xtrack", "cross_track_rmse"),
+    ("settle_s", "settling_time_s"),
+    ("geo_drop", "geofence_dropped"),
+]
+
+FLOAT3 = {"hold_rms_m", "hold_p95_m", "sat_frac", "arr_v", "radial_m", "xtrack", "rev_rate"}
+FLOAT1 = {"settled_pct", "lap_pct", "lap_completed", "wps", "settle_s"}
+
+
+def fmt(key: str, v) -> str:
+    if v is None:
+        return "-"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if f != f:                       # nan
+        return "nan"
+    if f in (float("inf"), float("-inf")):
+        return "inf" if f > 0 else "-inf"
+    if key in FLOAT3:
+        return f"{f:.3f}"
+    if key in FLOAT1:
+        return f"{f:.1f}"
+    return f"{f:g}"
+
+
+def load_run(d: Path) -> dict | None:
+    sj = d / "summary.json"
+    if not sj.is_file():
+        print(f"  ! {d}: no summary.json", file=sys.stderr)
+        return None
+    try:
+        return json.loads(sj.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"  ! {d}: summary.json unreadable ({exc})", file=sys.stderr)
+        return None
+
+
+def run_meta(d: Path, s: dict) -> dict:
+    """The few settings that make a row interpretable, read from the run itself."""
+    a = s.get("args", {}) or {}
+    lev = (s.get("level_flag") or {}).get("requested")
+    if lev is None:
+        lev = "default"
+    lengths = s.get("episode_lengths") or {}
+    sk = (lengths.get("station_keeping_s") or {})
+    sk_vals = {v for v in sk.values() if v is not None}
+    return {
+        "dir": d.name,
+        "steps": s.get("steps"),
+        "seed": a.get("seed", "-"),
+        "seeds": a.get("seeds", "-"),
+        "envs": a.get("envs", "-"),
+        "level": lev,
+        "sk_ep_s": (fmt("wps", next(iter(sk_vals))) if len(sk_vals) == 1 else "-"),
+        "wp_ep_s": fmt("wps", (lengths.get("wp_square_s"))),
+        "skip_pid": bool((s.get("controller_selection") or {}).get("skip_pid")),
+    }
+
+
+def arm_label(dirname: str) -> str:
+    """`results_a1_r8_A_S` -> `A_S`; falls back to the whole name."""
+    n = dirname
+    for pre in ("results_a1_", "results_"):
+        if n.startswith(pre):
+            n = n[len(pre):]
+            break
+    return n
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--dirs", nargs="*", default=None,
+                    help="result directories (default: every results_a1_* under the repo)")
+    ap.add_argument("--out", default=str(ROOT / "reports" / "AUTO_TABLES.md"))
+    ap.add_argument("--include-pid", action="store_true",
+                    help="also emit PID rows (default: PPO only)")
+    args = ap.parse_args(argv)
+
+    if args.dirs:
+        dirs = [ROOT / d if not Path(d).is_absolute() else Path(d) for d in args.dirs]
+    else:
+        dirs = sorted(p for p in ROOT.glob("results_a1_*") if p.is_dir())
+    dirs = [d for d in dirs if d.is_dir()]
+    if not dirs:
+        print("no result directories found", file=sys.stderr)
+        return 2
+
+    lines: list[str] = []
+    add = lines.append
+    add("# AUTO_TABLES.md — A1 results, generated mechanically")
+    add("")
+    add("**Generated by `tools/collect_results.py` from each run's `summary.json`. "
+        "Do not hand-edit; re-run the tool instead.**")
+    add("")
+    add("Every value below is read from the `summary.json` in the directory named in the "
+        "`dir` column. PPO rows only unless `--include-pid` was passed; PID is "
+        "checkpoint-independent, so identical PID numbers under different arms are the same "
+        "rollout, not a per-arm result.")
+    add("")
+
+    # ---- run inventory
+    add("## Runs")
+    add("")
+    add("| dir | steps | seeds | envs | level | sk_ep_s | wp_ep_s | skip_pid | source |")
+    add("|---|---|---|---|---|---|---|---|---|")
+    loaded: list[tuple[Path, dict, dict]] = []
+    for d in dirs:
+        s = load_run(d)
+        if s is None:
+            continue
+        m = run_meta(d, s)
+        loaded.append((d, s, m))
+        add(f"| {m['dir']} | {m['steps']} | {fmt('wps', m['seeds'])} | {fmt('wps', m['envs'])} "
+            f"| {m['level']} | {m['sk_ep_s']} | {m['wp_ep_s']} "
+            f"| {'yes' if m['skip_pid'] else 'no'} | `{d.name}/summary.json` |")
+    add("")
+
+    # ---- pooled table (mean over seeds)
+    add("## Pooled over seeds")
+    add("")
+    add("| arm | " + " | ".join(h for h, _ in COLS) + " | source |")
+    add("|" + "---|" * (len(COLS) + 2))
+    for d, s, _m in loaded:
+        for r in s.get("pooled", []) or []:
+            ctl = str(r.get("controller", ""))
+            if ctl != "ppo" and not args.include_pid:
+                continue
+            cells = [fmt(k, r.get(k)) for _h, k in COLS]
+            add(f"| {arm_label(d.name)} | " + " | ".join(cells)
+                + f" | `{d.name}/summary.json` |")
+    add("")
+
+    # ---- per-seed table, so a decision can be checked without re-reading json
+    add("## Per seed")
+    add("")
+    add("| arm | seed | " + " | ".join(h for h, _ in COLS) + " |")
+    add("|" + "---|" * (len(COLS) + 2))
+    for d, s, _m in loaded:
+        for r in s.get("per_seed", []) or []:
+            ctl = str(r.get("controller", ""))
+            if ctl != "ppo" and not args.include_pid:
+                continue
+            cells = [fmt(k, r.get(k)) for _h, k in COLS]
+            add(f"| {arm_label(d.name)} | {r.get('seed', '-')} | " + " | ".join(cells) + " |")
+    add("")
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines), encoding="utf-8")
+    print(f"wrote {out} ({len(loaded)} run(s), {len(lines)} lines)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

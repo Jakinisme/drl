@@ -178,12 +178,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--envs", type=int, default=None, help="override settings.envs")
     ap.add_argument("--scenarios", default=None, help="override settings.scenarios (csv)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--sk-episode-s", type=float, default=None,
+                    help="override settings.sk_episode_s: episode length for the "
+                         "station-keeping scenarios (sk_wind, rough_sea); wp_square keeps "
+                         "--episode-s")
+    ap.add_argument("--level", type=float, default=None,
+                    help="pin the disturbance curriculum SCALE (0..1) for every scenario, "
+                         "same meaning as evaluate.py --level")
+    ap.add_argument("--skip-pid", action="store_true",
+                    help="accepted for symmetry with evaluate.py; the gate never runs PID, "
+                         "so this is a no-op and is recorded in the settings block")
     ap.add_argument("--out", default=None, help="write the gate JSON here (optional)")
     args = ap.parse_args(argv)
 
     gates = load_gates(Path(args.gates))
     st = gates.get("settings", {})
     args.episode_s = st.get("episode_s")
+    args.sk_episode_s = (args.sk_episode_s if args.sk_episode_s is not None
+                         else st.get("sk_episode_s"))
     args.dwell_stay = float(st.get("dwell_stay_factor", 1.0))
     args.square_hold = float(st.get("square_hold_s", 10.0))
     args.tol = float(st.get("tol_m", 1.0))
@@ -214,7 +226,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"ckpt {ckpt_path} steps={ck.get('steps')} iteration={ck.get('iteration')}")
     print(f"gate {args.gates} | device {device.type} | scenario "
           f"{','.join(names)} | seeds {args.seeds} x envs {args.envs} | "
-          f"episode-s {args.episode_s} dwell-stay {args.dwell_stay} "
+          f"episode-s {args.episode_s} (wp_square only) "
+          f"sk-episode-s {args.sk_episode_s} (sk_wind/rough_sea only) "
+          f"level {args.level if args.level is not None else 'default 1.0'} "
+          f"dwell-stay {args.dwell_stay} "
           f"tol {args.tol} m hold {args.hold_s} s "
           f"(sim, placeholder physics — says nothing about the real vessel)")
 
@@ -228,6 +243,10 @@ def main(argv: list[str] | None = None) -> int:
         scen = dict(ev.SCENARIOS[name])
         if name == "wp_square" and args.episode_s is not None:
             scen["episode_s"] = float(args.episode_s)
+        if name != "wp_square" and args.sk_episode_s is not None:
+            scen["episode_s"] = float(args.sk_episode_s)
+        if args.level is not None:
+            scen["level"] = float(args.level)
         per_ep = gate_episodes(name, scen, policy, device, args)
         summary[name] = pooled(per_ep)
         n_ep[name] = len(per_ep)
@@ -250,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.out).write_text(json.dumps(
             {"ckpt": str(ckpt_path), "steps": ck.get("steps"),
              "settings": {"seeds": args.seeds, "envs": args.envs, "episode_s": args.episode_s,
+                         "sk_episode_s": args.sk_episode_s, "level": args.level,
+                         "skip_pid_noop": bool(args.skip_pid),
                           "dwell_stay_factor": args.dwell_stay, "tol_m": args.tol,
                           "hold_s": args.hold_s, "scenarios": names},
              "per_scenario": summary, "n_episodes": n_ep, "gate": rows,

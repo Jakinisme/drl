@@ -181,6 +181,24 @@ def env_cfg(physics_randomize: bool = True) -> dict:
     return cfg
 
 
+def scenario_episode_cfg(scen: dict) -> dict:
+    """`env_cfg()` with the scenario's episode mode applied.
+
+    SCENARIOS pins `mode` (1 = station keeping, 0 = waypoints) but nothing consumed it, so
+    `sk_wind` ran at the training mix (`station_keeping_fraction: 0.3`): only ~30 % of its
+    episodes were station keeping and the rest were waypoint episodes with no final hold.
+    That is why `hold_rms_m`/`hold_p95_m` came back nan on most sk_wind episodes -- not a
+    metrics bug, a scenario that never actually forced the mode it advertised.
+
+    A2 in this task: map `mode` -> `station_keeping_fraction` (0.0 or 1.0). Scenarios that
+    omit `mode` keep the config value, so nothing else changes.
+    """
+    cfg = env_cfg(physics_randomize=not scen.get("pid_soft", False))
+    if "mode" in scen:
+        cfg["episode"]["station_keeping_fraction"] = 1.0 if float(scen["mode"]) > 0.5 else 0.0
+    return cfg
+
+
 def rough_disturbance(scale: float) -> dict:
     """configs/disturbance.yaml with the TODO SYSID amplitudes x scale.  Not a measurement."""
     cfg = _load_yaml(ROOT / "configs" / "disturbance.yaml")
@@ -593,7 +611,7 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     step.  These ride in `rec["_dump"]` so the main path stays byte-compatible when the
     flag is off.
     """
-    cfg = env_cfg(physics_randomize=not scen.get("pid_soft", False))
+    cfg = scenario_episode_cfg(scen)
     cfg["num_envs"] = int(num_envs)
     cfg["episode_s"] = float(scen["episode_s"])
     cfg["max_steps"] = None                              # derived: episode_s * policy_hz
@@ -608,6 +626,15 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     # set_curriculum(1.0): that takes the level INDEX, and index 1 is scale 0.1.
     env.set_curriculum(env.n_levels - 1)
     assert env._level_value() == 1.0, f"curriculum scale is {env._level_value()}, not 1.0"
+    # A1 phase 1: --level pins the disturbance SCALE (not an index). Snap to the nearest
+    # entry of scale_by_level so the env's own set_curriculum keeps its index semantics.
+    if scen.get("level") is not None:
+        want = float(scen["level"])
+        scales = [float(x) for x in env.scale_by_level]
+        idx = int(np.argmin([abs(s - want) for s in scales]))
+        env.set_curriculum(idx)
+        if abs(scales[idx] - want) > 1e-9:
+            print(f"  --level {want} snapped to {scales[idx]} (index {idx} of {scales})")
     B, T = env.num_envs, env.max_steps
     rec: dict[str, list[torch.Tensor]] = {k: [] for k in
                                           ("xy", "goal_xy", "psi", "action", "ep_step",
@@ -744,6 +771,12 @@ def fmt(v) -> str:
     if isinstance(v, (int, np.integer)):
         return str(int(v))
     if isinstance(v, (float, np.floating)):
+        # nan and inf are different answers and must not print the same: nan = "not
+        # applicable / not measured" (e.g. arrival_speed on a scenario with no waypoints),
+        # inf = "would never settle". The old single "inf" made a missing metric look like a
+        # failed one, which is exactly how a NOT AVAILABLE row gets misread.
+        if np.isnan(v):
+            return "nan"
         return "inf" if not np.isfinite(v) else f"{float(v):.3g}"
     return str(v)
 
@@ -791,6 +824,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="run only the ppo controller; skip the PID baseline (halves the wall "
                          "time and writes no *_pid rows/CSVs). PPO and PID roll the same "
                          "episode, so a PPO-only run is comparable to an earlier full run")
+    ap.add_argument("--sk-episode-s", type=float, default=None,
+                    help="episode length in seconds for the STATION-KEEPING scenarios "
+                         "(sk_wind, rough_sea, sk_pid_soft); default keeps their built-in "
+                         "120 s. Independent of --episode-s, which applies to wp_square only")
+    ap.add_argument("--level", type=float, default=None,
+                    help="pin the disturbance curriculum SCALE (0.0..1.0, snapped to the "
+                         "nearest entry of disturbance.curriculum.scale_by_level); default "
+                         "keeps evaluate.py's current behaviour (index n_levels-1 = 1.0). "
+                         "NOTE: this is a scale, not an index -- --level 0 is calm, "
+                         "--level 1 is full disturbance")
     ap.add_argument("--hold-s", type=float, default=HOLD_S,
                     help="evalkit SETTLING hold time (default 5.0 s); NOT the corner dwell "
                          "(that is --square-hold)")
@@ -838,6 +881,10 @@ def main(argv: list[str] | None = None) -> int:
         scen = dict(SCENARIOS[name])
         if name == "wp_square" and args.episode_s is not None:    # wp_square only
             scen["episode_s"] = float(args.episode_s)
+        if name != "wp_square" and args.sk_episode_s is not None:
+            scen["episode_s"] = float(args.sk_episode_s)          # station-keeping scenarios
+        if args.level is not None:
+            scen["level"] = float(args.level)
         for k in range(args.seeds):
             seed = int(args.seed) + 1000 * si + k
             for kind in controllers:
@@ -962,6 +1009,24 @@ def main(argv: list[str] | None = None) -> int:
                     "dwell_stay_factor": float(args.dwell_stay_factor),
                     "square_hold_s": float(args.square_hold),
                     "square_side_m": float(args.square_side)},
+         # A1 phase 1: record which scenario each episode length applies to, so a run is
+         # reproducible from summary.json alone without reading argparse defaults.
+         "episode_lengths": {
+             "wp_square_s": float(SCENARIOS["wp_square"]["episode_s"])
+                            if args.episode_s is None else float(args.episode_s),
+             "station_keeping_s": {s: float(SCENARIOS[s]["episode_s"])
+                                   if args.sk_episode_s is None or s == "wp_square"
+                                   else float(args.sk_episode_s)
+                                   for s in names},
+             "note": "--episode-s applies to wp_square only; --sk-episode-s applies to "
+                     "sk_wind/rough_sea/sk_pid_soft only"},
+         "controller_selection": {
+             "skip_pid": bool(args.skip_pid),
+             "ran": list(controllers),
+             "note": "PID is checkpoint-independent, so --skip-pid does not change PPO rows"},
+         "level_flag": {"requested": args.level,
+                        "note": "disturbance curriculum SCALE (0..1), not an index; "
+                                "default keeps index n_levels-1 = 1.0"},
          # R8_D: disturbance seeding — before this, `--seed` left wind/waves identical
          "disturbance_seeding": {
              "scheme": "seed_offset = seed*1000 + 17",

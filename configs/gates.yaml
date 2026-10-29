@@ -14,7 +14,8 @@
 
 settings:                     # pinned so a gate run is reproducible from the file alone
   scenarios: [sk_wind, wp_square]
-  episode_s: 300.0            # evaluate.py --episode-s (wp_square only; sk_wind keeps 120 s)
+  episode_s: 300.0            # evaluate.py --episode-s: wp_square ONLY
+  sk_episode_s: 300.0         # station-keeping scenarios ONLY (sk_wind/rough_sea); A1 phase 1
   dwell_stay_factor: 1.0      # evaluate.py --dwell-stay-factor, 1.0 = no dwell hysteresis
   seeds: 4                    # evaluate.py --seeds (seed = base + 1000*scenario idx + k)
   envs: 8                     # evaluate.py --envs
@@ -42,10 +43,9 @@ scenarios:
       dir: max
       value: 30.0             # UNTUNED placeholder — no calibration data exists
       note: "surge sign changes/min, both sides |surge| > 0.5; unit is per MINUTE"
-    arrival_speed_mean_mps:
-      dir: max
-      value: 0.6              # UNTUNED placeholder — no calibration data exists
-      note: "mean speed on first entry into the hold point (evalkit arrival_speed_mean_mps)"
+    # arrival_speed_mean_mps removed from sk_wind (task A1 phase 1): sk_wind has no planned
+    # waypoints, so the metric is undefined there and always read NOT AVAILABLE, turning the
+    # gate red for a reason that says nothing about the policy. It stays enforced on wp_square.
     geofence_dropped_episodes:
       dir: max
       value: 0                # UNTUNED placeholder — no calibration data exists
