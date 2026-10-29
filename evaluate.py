@@ -787,6 +787,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default=str(ROOT / "results"))
     ap.add_argument("--no-plots", action="store_true")
     ap.add_argument("--tol", type=float, default=TOL_M)
+    ap.add_argument("--skip-pid", action="store_true",
+                    help="run only the ppo controller; skip the PID baseline (halves the wall "
+                         "time and writes no *_pid rows/CSVs). PPO and PID roll the same "
+                         "episode, so a PPO-only run is comparable to an earlier full run")
     ap.add_argument("--hold-s", type=float, default=HOLD_S,
                     help="evalkit SETTLING hold time (default 5.0 s); NOT the corner dwell "
                          "(that is --square-hold)")
@@ -803,6 +807,7 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         print(f"unknown scenario(s) {unknown}; choose from {sorted(SCENARIOS)}")
         return 2
+    controllers = ("ppo",) if args.skip_pid else ("ppo", "pid")
     t_start = time.time()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -835,7 +840,7 @@ def main(argv: list[str] | None = None) -> int:
             scen["episode_s"] = float(args.episode_s)
         for k in range(args.seeds):
             seed = int(args.seed) + 1000 * si + k
-            for kind in ("ppo", "pid"):
+            for kind in controllers:
                 t0 = time.time()
                 rec = run_rollout(kind, policy, device, scen, seed, args.episodes, args.envs,
                                   args.rough_scale, args.square_side, args.square_hold,
