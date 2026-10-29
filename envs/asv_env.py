@@ -51,6 +51,12 @@ __all__ = ["AsvEnv", "RAW_DIM", "load_config", "raw_sample_torch"]
 
 RAW_DIM = 15
 
+# R8 keys and the values that switch the new reward terms OFF (pre-R8 behaviour).
+# A config that predates R8 (no R8 keys at all) must still run, and must run the R4
+# reward — so the reward reads `cfg["reward"].get(k, R8_OFF[k])`, never `["k"]`.
+R8_OFF = {"w_hold": 0.0, "hold_radius_m": 1.5, "w_sat": 0.0,
+          "arrive_gate_floor": 1.0, "settle_speed_ref_mps": 3.4028234663852886e38}
+
 
 def load_config(path=None) -> dict:
     """Load `configs/env.yaml` (default) or an explicit file."""
@@ -149,6 +155,9 @@ class AsvEnv:
         self.wp_r = float(ep.get("waypoint_radius_m", 35.0))
 
         self.w = {key: float(val) for key, val in cfg["reward"].items()}
+        # R8 keys absent from a pre-R8 config get their OFF values (see R8_OFF)
+        for key, default in R8_OFF.items():
+            self.w.setdefault(key, float(default))
         self.max_surge = float(self.vehicle["max_surge_mps"])
 
         rd = cfg["randomization"]
@@ -230,6 +239,9 @@ class AsvEnv:
         lz = lambda: torch.zeros(n, dtype=torch.long, device=self.device)   # noqa: E731
         self.wp_idx, self.n_wp, self.ep_step = lz(), lz(), lz()
         self.final_latch = torch.zeros(n, dtype=torch.bool, device=self.device)  # R4
+        # R8: speed at the moment of arrival, per env — filled by `_arrive_evt`
+        self.speed_arrival = z(n)
+        self._arrival_is_final = torch.zeros(n, dtype=torch.bool, device=self.device)
         self.obs_buf = z(n, self.obs_dim)
         self.meas = None
         self.t_loop = 0.0          # control-loop monotonic clock [s], never reset
@@ -286,6 +298,8 @@ class AsvEnv:
         self.n_wp[idx] = torch.where(wp_mode, nw, torch.zeros_like(nw))
         self.wp_idx[idx] = 0
         self.final_latch[idx] = False
+        self.speed_arrival[idx] = 0.0
+        self._arrival_is_final[idx] = False
         self.hold_xy[idx] = hold
         self.hold_psi[idx] = s[:, 2]
         self.goal_xy[idx] = torch.where(wp_mode.unsqueeze(1), wps[:, 0], hold)
@@ -434,20 +448,43 @@ class AsvEnv:
 
     def _arrive_evt(self, adv: torch.Tensor) -> torch.Tensor:
         """Float [N] arrival event: 1 on the step the pointer moves, or the FIRST time the
-        final waypoint is entered (latched in `final_latch`, cleared on reset)."""
+        final waypoint is entered (latched in `final_latch`, cleared on reset).
+
+        R8: also stores the speed at that moment in `self.speed_arrival`, which `_reward`
+        gates the bonus on (a latched bonus cannot be speed-gated after the fact).
+        """
         d = self._goal_dist()
         final = self._final_mask() & (self.mode < 0.5)          # final WP in waypoint mode
         enter = final & (d < self.arrival) & ~self.final_latch
+        evt = adv | enter
         self.final_latch |= enter
-        return (adv | enter).to(self.dtype)
+        self.speed_arrival = torch.where(evt, self._speed(), self.speed_arrival)
+        # R8: remember whether THIS event was the final waypoint's entry, so `_reward` can
+        # apply the floor to intermediate crossings only (a latched event cannot recompute it).
+        self._arrival_is_final = torch.where(evt, enter, self._arrival_is_final)
+        return evt.to(self.dtype)
+
+    def _speed(self) -> torch.Tensor:
+        """Surge/sway speed |v_body| [N] — the quantity `runtime` reports as `speed_mps`.
+
+        Yaw rate is deliberately NOT included: see reports/R8_A_reward.md §4.
+        """
+        return self.state[:, 3:5].norm(dim=1)
+
+    def _gate(self, speed: torch.Tensor, ref: float) -> torch.Tensor:
+        """R8 settle gate `exp(-(speed / ref)^2)`; 1.0 at rest, `e^-1` at `ref`, -> 0 fast."""
+        # both operands forced to tensors: `speed / float` and a plain string/np.float ref
+        # would silently leave torch's scalar path (found: YAML `1e20` parses as a str)
+        r = torch.as_tensor(float(ref), device=speed.device, dtype=speed.dtype)
+        return torch.exp(-(speed / r).pow(2))
 
     def _reward(self, d, dd, a, a_prev, final=None, arrive_evt=None) -> torch.Tensor:
-        """Per-step reward (CONTRACT §3.4 `reward:` block, reports/R4.md for the formula)."""
+        """Per-step reward (CONTRACT §3.4 `reward:` block; R4 formula, R8 settle terms)."""
         w = self.w
         if final is None:
             final = self._final_mask()
         final = final.to(self.dtype)
-        speed = self.state[:, 3:5].norm(dim=1)
+        speed = self._speed()
         perr = _wrap_pi(self.psi_goal - self.state[:, 2]).abs()
         near = (d < self.slowdown).to(self.dtype)
         r = (w["w_position"] * torch.exp(-d / w["pos_sigma_m"]) * final
@@ -459,7 +496,27 @@ class AsvEnv:
              - w["w_action_rate"] * (a - a_prev).pow(2).mean(dim=1)
              - w["w_energy"] * a.pow(2).mean(dim=1))
         if arrive_evt is not None:
-            r = r + w["w_arrival"] * arrive_evt
+            # R8: speed-gated arrival. An INTERMEDIATE waypoint keeps a floor, so a fast
+            # crossing still pays something. The FINAL waypoint pays the gate only -- no
+            # floor -- because that landing is precisely what R7 never learned to do: a
+            # 1.47 m/s fly-through must not still collect 3.0.
+            #   g_final = floor + (1 - floor) * gate
+            #   floor_eff = 0 where the event was the final waypoint's entry, else the config.
+            # `speed_arrival` is already per-env, and the final entry is distinguishable
+            # because `adv` never fires for the last waypoint (see _update_goals).
+            ref = w["settle_speed_ref_mps"]
+            g = self._gate(self.speed_arrival, ref)
+            floor = torch.where(self._arrival_is_final, torch.zeros_like(g),
+                                torch.full_like(g, w["arrive_gate_floor"]))
+            r = r + w["w_arrival"] * arrive_evt * (floor + (1.0 - floor) * g)
+        if w["w_hold"] != 0.0:
+            # R8 dense settle bonus: final goal only (SK or last WP), tight radius, slow only
+            hold = (d < w["hold_radius_m"]).to(self.dtype) * final
+            r = r + w["w_hold"] * hold * self._gate(speed, w["settle_speed_ref_mps"])
+        if w["w_sat"] != 0.0:
+            # R8 saturation: 0 inside +-0.8, (x-0.8)/0.2 squared beyond, mean over axes
+            sat = ((a.abs() - 0.8).clamp(min=0.0) / 0.2).pow(2).mean(dim=1)
+            r = r - w["w_sat"] * sat
         return r.to(self.dtype)
 
     # ------------------------------------------------------------------ step

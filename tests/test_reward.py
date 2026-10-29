@@ -169,9 +169,13 @@ def test_station_keeping_pays_no_arrival_and_keeps_the_fine_kernel():
     near, far = at(0.5), at(3.0)
     gain = float(near[0] - far[0])
     w = env.w
+    # R8: the dense hold bonus fires at 0.5 m (inside hold_radius_m) with speed 0, so the
+    # near-minus-far gain now includes it; it does NOT fire at 3.0 m. Same expectation as
+    # before R8 plus w_hold * gate(0, ref) = w_hold * 1.
     want = (w["w_position"] * (math.exp(-0.5 / w["pos_sigma_m"]) - math.exp(-3.0 / w["pos_sigma_m"]))
             + w["w_position_fine"] * (math.exp(-0.5 / w["pos_sigma_fine_m"])
-                                      - math.exp(-3.0 / w["pos_sigma_fine_m"])))
+                                      - math.exp(-3.0 / w["pos_sigma_fine_m"]))
+            + w.get("w_hold", 0.0) * (0.5 < w.get("hold_radius_m", 0.0)))
     assert gain == pytest.approx(want, abs=1e-4)
     assert gain > w["w_position"] * (math.exp(-0.5 / 10.0) - math.exp(-3.0 / 10.0))  # fine kernel adds
 

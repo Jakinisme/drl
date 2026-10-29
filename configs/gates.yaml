@@ -1,0 +1,66 @@
+# R8/V4 — behaviour gate thresholds read by tools/gate_policy.py.
+#
+# EVERY threshold below is annotated `# UNTUNED placeholder — no calibration data exists`.
+# They are plausible guesses picked from the observed spread of evaluate.py runs (R6/R7),
+# NOT derived from a calibration set: there is no per-seed best/worst band, no baseline PID
+# envelope, and no real-vessel data behind any number here.  Treat a PASS as "not obviously
+# broken", never as "good".  Replace with values justified by a seed sweep before this gate
+# is trusted to block an export.
+#
+# How a row is read: `dir: min` -> value must be >= threshold; `dir: max` -> value must be
+# <= threshold.  A metric that is missing from the summary, NaN, or inf is reported as
+# "NOT AVAILABLE" and FAILS the gate (this is deliberate: evalkit/metrics.py may not yet
+# export the R8 columns, and a silently-passing absent metric is how R7 shipped).
+
+settings:                     # pinned so a gate run is reproducible from the file alone
+  scenarios: [sk_wind, wp_square]
+  episode_s: 300.0            # evaluate.py --episode-s (wp_square only; sk_wind keeps 120 s)
+  dwell_stay_factor: 1.0      # evaluate.py --dwell-stay-factor, 1.0 = no dwell hysteresis
+  seeds: 4                    # evaluate.py --seeds (seed = base + 1000*scenario idx + k)
+  envs: 8                     # evaluate.py --envs
+  seed: 0
+  square_hold_s: 10.0         # evaluate.py --square-hold (corner dwell)
+  tol_m: 1.0                  # evaluate.py --tol  (settled threshold = GPS noise floor)
+  hold_s: 5.0                 # evaluate.py --hold-s (evalkit settling hold)
+
+scenarios:
+
+  sk_wind:                    # station keeping under wind+current+waves, level 1.0
+    settled_pct:
+      dir: min
+      value: 80.0             # UNTUNED placeholder — no calibration data exists
+      note: "fraction of episodes that settle inside tol_m; R7 measured 0-53 %"
+    hold_rms_m:
+      dir: max
+      value: 1.5              # UNTUNED placeholder — no calibration data exists
+      note: "RMS radial error over the final 30 s hold (evalkit hold_rms)"
+    sat_frac:
+      dir: max
+      value: 0.30             # UNTUNED placeholder — no calibration data exists
+      note: "fraction of steps with max|a| > 0.9 on any axis"
+    reversal_rate:
+      dir: max
+      value: 30.0             # UNTUNED placeholder — no calibration data exists
+      note: "surge sign changes/min, both sides |surge| > 0.5; unit is per MINUTE"
+    arrival_speed_mean_mps:
+      dir: max
+      value: 0.6              # UNTUNED placeholder — no calibration data exists
+      note: "mean speed on first entry into the hold point (evalkit arrival_speed_mean_mps)"
+    geofence_dropped_episodes:
+      dir: max
+      value: 0                # UNTUNED placeholder — no calibration data exists
+      note: "counted from complete vs simulated episodes; any exit fails the gate"
+
+  wp_square:                  # one lap of a 30 m square (square-side stays evaluate.py's)
+    waypoints_reached:
+      dir: min
+      value: 3.5              # UNTUNED placeholder — no calibration data exists
+      note: "mean of 4 corners per episode; 4.0 = every corner on every seed"
+    lap_completed:
+      dir: min
+      value: 0.75             # UNTUNED placeholder — no calibration data exists
+      note: "FRACTION of episodes whose lap is completed (evaluate.aggregate means the bool)"
+    sat_frac:
+      dir: max
+      value: 0.30             # UNTUNED placeholder — no calibration data exists
+      note: "fraction of steps with max|a| > 0.9 on any axis"

@@ -218,6 +218,16 @@ reward:
   w_position_fine: 0.5     # second, tight position kernel (final goal only)
   pos_sigma_fine_m: 2.0
   xtrack_sigma_m: 3.0      # cross-track scale (replaced pos_sigma_m there)
+  # R8 keys (all TODO T8 placeholder, untuned; formula below). The pre-R8 reward is
+  # reproduced bit for bit by w_hold: 0, w_sat: 0, arrive_gate_floor: 1.0 plus the three
+  # pre-R8 weights above (w_near_goal_speed 0.1, w_action_rate 0.05, w_energy 0.01):
+  # `configs/r8/env_control_A.yaml`. w_near_goal_speed/w_action_rate/w_energy are retuned
+  # to 0.3/0.15/0.02.
+  w_hold: 0.5              # dense settle bonus, FINAL goal + slow only
+  hold_radius_m: 1.5       # inside arrival_radius_m on purpose
+  w_sat: 0.1               # penalty on |a| > 0.8
+  arrive_gate_floor: 0.3   # fraction of w_arrival a FAST intermediate crossing still pays
+  settle_speed_ref_mps: 0.4   # gate scale; the OFF value is 100000000000000000000.0 (1e20)
 randomization:
   mass: 0.30               # +/- fraction
   inertia: 0.30
@@ -255,6 +265,25 @@ r =  w_position      * exp(-d / pos_sigma_m)      * final
    - w_action_rate   * mean(a - a_prev)^2
    - w_energy        * mean(a^2)
 ```
+
+R8 adds the settlement terms below (`gate(speed, ref) = exp(-(speed/ref)^2)`, `speed =
+|v_body| = ||(u, v)||`). `speed_arrival` is captured by `_arrive_evt` on the step the event
+fires and held per env; the latch semantics of `arrive_evt` are unchanged. The first term
+replaces `+ w_arrival * arrive_evt`:
+
+```
++ w_arrival * arrive_evt * (arrive_gate_floor + (1 - arrive_gate_floor) * gate(speed_arrival,
+                                                                              settle_speed_ref_mps))
+      # arrive_evt is 1 for an intermediate WP (pointer advanced, paid once) and for the
+      # first entry of the final WP (latched). arrive_gate_floor = 1.0 restores the
+      # pre-R8 constant bonus exactly; with floor < 1 a fast crossing still pays the floor.
+      # The intent is floor-heavy for intermediate WPs and gate-only at the final goal;
+      # one formula is used for both (see reports/R8_A_reward.md §5).
++ w_hold   * (d < hold_radius_m) * final * gate(speed, settle_speed_ref_mps)
+- w_sat    * mean_over_axes( clamp(|a| - 0.8, min=0) / 0.2 )^2                # every step
+```
+
+`_arrive_evt` also stores `speed_arrival` [N] float (speed at the last event of that env).
 
 `step()` info dict additionally carries `arrive_evt` [N] float, `wp_idx` [N] int64 and
 `n_wp` [N] int64 (clones). Every other info key is unchanged.

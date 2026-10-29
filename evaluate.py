@@ -144,7 +144,25 @@ METRIC_COLS = ["radial_error_mean", "radial_error_p95", "radial_error_max",
                "cross_track_rmse", "settling_time_s", "settling_p95_s", "energy",
                "energy_j_proxy", "action_rate", "settled_pct",
                # R4: parking 3.4 m short of a corner looks fine to the radial columns
-               "waypoints_reached", "lap_pct", "lap_completed"]
+               "waypoints_reached", "lap_pct", "lap_completed",
+               # R8: appended at the END, nothing above reordered (R8_D)
+               "sat_frac", "reversal_rate", "arrival_speed_mean_mps",
+               "hold_rms_m", "hold_p95_m"]
+
+# The printed per-seed line carries the SAME numbers as the summary.csv columns, in the same
+# order (tests/test_disturbance_seed.py checks the two agree with METRIC_COLS).
+PRINT_COLS = list(METRIC_COLS)
+
+
+def disturbance_seed_offset(seed: int, env_index: int = 0) -> int:
+    """Disturbance-generator seed for one eval run: ``seed*1000 + 17``, one stream per seed.
+
+    `AsvEnv` builds ONE `Disturbance` for the whole batch, so the wind/wave stream is shared by
+    the envs of a rollout: `env_index` only distinguishes rollouts, it does not decorrelate the
+    envs.  Without this the generator seed was the yaml constant, so `--seed` changed the spawn
+    pose but NOT wind/waves (measured: max abs diff 0.0 between --seed 0 and --seed 1234).
+    """
+    return int(seed) * 1000 + 17
 
 
 # --------------------------------------------------------------------------- config helpers
@@ -559,8 +577,13 @@ def capture_conditions(env: AsvEnv, path) -> dict[str, torch.Tensor]:
 def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
                 episodes: int, num_envs: int, rough_scale: float,
                 square_side: float = SQUARE_SIDE_M, hold_s: float = 10.0,
-                dwell_stay: float = 1.5, dump: bool = False) -> dict:
+                dwell_stay: float = 1.5, dump: bool = False,
+                env_index: int = 0) -> dict:
     """Simulate `episodes` episodes on `num_envs` envs; return the [T, N, ...] record.
+
+    `env_index` (> 0) is set by the CLI to stamp `seed_offset = disturbance_seed_offset(seed,
+    env_index)` into the disturbance config, so `--seed` changes wind/waves too; the default
+    0 keeps this function's old behaviour for tests and callers that share a policy rollout.
 
     `dump=True` (--dump-conditions) additionally records, per step, the observation the
     policy saw (`obs` [T,N,150]), the raw policy action before the env's rate clamp
@@ -574,7 +597,11 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     cfg["num_envs"] = int(num_envs)
     cfg["episode_s"] = float(scen["episode_s"])
     cfg["max_steps"] = None                              # derived: episode_s * policy_hz
-    kw = {"disturbance_cfg": rough_disturbance(rough_scale)} if scen["rough"] else {}
+    dcfg = rough_disturbance(rough_scale) if scen["rough"] else None
+    if env_index > 0:
+        dcfg = dcfg if dcfg is not None else _load_yaml(ROOT / "configs" / "disturbance.yaml")
+        dcfg["seed_offset"] = disturbance_seed_offset(seed, env_index)
+    kw = {"disturbance_cfg": dcfg} if dcfg is not None else {}
     env = FastEnv(cfg, device=str(device), seed=int(seed), **kw)
     assert env.max_steps == int(round(scen["episode_s"] * env.policy_hz))
     # pin the last row of disturbance.curriculum.scale_by_level (1.0).  NOT via
@@ -812,7 +839,8 @@ def main(argv: list[str] | None = None) -> int:
                 t0 = time.time()
                 rec = run_rollout(kind, policy, device, scen, seed, args.episodes, args.envs,
                                   args.rough_scale, args.square_side, args.square_hold,
-                                  args.dwell_stay_factor, dump=args.dump_conditions)
+                                  args.dwell_stay_factor, dump=args.dump_conditions,
+                                  env_index=si + 1)
                 meta = rec.pop("_meta")
                 path = rec.pop("_path", None)
                 wps = rec.pop("_waypoints", None)          # R4: [N][4,2] or None
@@ -854,7 +882,11 @@ def main(argv: list[str] | None = None) -> int:
                              "n_episodes": len(per_ep), "n_envs": meta["num_envs"],
                              "duration_s": meta["max_steps"] * meta["policy_dt"],
                              "wall_s": round(meta["wall_s"], 1),
-                             "level": meta["level"], **agg})
+                             "level": meta["level"],
+                             # R8_D: the disturbance-generator seed this rollout actually used
+                             "disturbance_seed":
+                                 disturbance_seed_offset(seed, si + 1),
+                             **agg})
                 write_csv(out_dir / f"{name}_{kind}_{seed}_per_episode.csv", eps_rows,
                           ["scenario", "controller", "seed", "episode", "env"] + list(agg)
                           + TW_COLS)          # R5: appended at the END, nothing reordered
@@ -878,6 +910,8 @@ def main(argv: list[str] | None = None) -> int:
                       f"{agg.get('settled_pct', 0.0):5.1f}% wp "
                       f"{agg.get('waypoints_reached', float('nan')):4.2f} lap "
                       f"{agg.get('lap_pct', float('nan')):5.1f}% ({time.time() - t0:.0f} s)"
+                      # R8: same numbers and order as PRINT_COLS/summary.csv
+                      + " r8 " + " ".join(f"{c}={fmt(agg.get(c))}" for c in PRINT_COLS[13:])
                       + ("" if not tw_mean else " tw "
                          + str([None if np.isnan(t) else round(t, 1) for t in tw_mean])))
                 if not args.no_plots:
@@ -922,7 +956,14 @@ def main(argv: list[str] | None = None) -> int:
                     if args.episode_s is None else float(args.episode_s),
                     "dwell_stay_factor": float(args.dwell_stay_factor),
                     "square_hold_s": float(args.square_hold),
-                    "square_side_m": float(args.square_side)}},
+                    "square_side_m": float(args.square_side)},
+         # R8_D: disturbance seeding — before this, `--seed` left wind/waves identical
+         "disturbance_seeding": {
+             "scheme": "seed_offset = seed*1000 + 17",
+             "applies_to": "evaluate.py rollouts only (train.py unchanged)",
+             "per_seed": [{"scenario": r["scenario"], "seed": r["seed"],
+                           "seed_offset": r["disturbance_seed"]}
+                          for r in rows if r["controller"] == "ppo"]}},
         indent=1, default=str), encoding="utf-8")
     table = markdown(pooled, cols)
     print("\n" + table)
@@ -1006,7 +1047,8 @@ def plots(out_dir: Path, name: str, kind: str, ep: dict, path, tol: float, dt: f
                   if p is not None else {"waypoints_reached": float("nan"),
                                          "lap_completed": False})
             err = np.sqrt(((tr["xy"] - tr["goal_xy"]) ** 2).sum(-1))
-            tr["_wp"] = int(wp["waypoints_reached"])
+            tr["_wp"] = int(wp["waypoints_reached"]) if np.isfinite(wp["waypoints_reached"]) \
+                else -1                            # sk_wind: no plan -> not a waypoint episode
             tr["_err"] = float(err.mean())
             tr["_lap"] = bool(wp["lap_completed"])
             tr["_e"], tr["_i"] = e, i

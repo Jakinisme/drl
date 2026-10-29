@@ -90,6 +90,9 @@ class Disturbance:
         self.wave_phase_yaw = torch.zeros(n, self.n_comp, device=self.device, dtype=dtype)
 
         self._gen = torch.Generator(device=self.device)
+        # R8_D: additive seed hook.  Absent/0 -> identical stream to before (default).
+        # evaluate.py sets `seed_offset = seed*1000 + 17` so --seed also moves wind/waves;
+        # train.py never sets it, so training is unchanged.
         self._gen.manual_seed(int(cfg.get("seed_offset", 0)))
 
         self.reset()
