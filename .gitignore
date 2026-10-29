@@ -7,5 +7,4 @@ runs/
 # Evaluation artefacts (CSV + plots). Regenerable from a checkpoint with evaluate.py;
 # large and machine-specific, so they stay out of git like runs/.
 results/
-results_*/
 
