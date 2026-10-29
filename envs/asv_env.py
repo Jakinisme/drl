@@ -273,7 +273,10 @@ class AsvEnv:
         s[:, 2] = self._unif(k) * math.pi
         self.state[idx] = s
 
-        self.mode[idx] = (self._unif(k) < self.sk_frac).to(dtp)
+        # `_unif` draws U(-1,1), so `_unif(k) < p` would realise (p + 1) / 2 and a
+        # `station_keeping_fraction: 0.0` still produced ~50 % SK episodes. Map to U(0,1)
+        # first, exactly as the weak-thruster draw below does (`2 * r_weak_prob - 1`).
+        self.mode[idx] = (self._unif(k, lo=0.0, hi=1.0) < self.sk_frac).to(dtp)
         hold = torch.stack([self._unif(k) * self.wp_r, self._unif(k) * self.wp_r], dim=1)
         wps = torch.stack([self._unif(k, self.max_wp) * self.wp_r,
                            self._unif(k, self.max_wp) * self.wp_r], dim=2)  # [k, max_wp, 2]
