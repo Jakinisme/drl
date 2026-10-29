@@ -1,7 +1,8 @@
 """torch vs onnxruntime parity of the exported policy — CONTRACT.md §4.8.
 
-Runs against the real checkpoint (`runs/checkpoints/ckpt_last.pt`), re-exports on the
-fly so nothing depends on a stale artifact. CPU only.
+Runs against the BEST trained checkpoint (`runs/r7_300m/ckpt/ckpt_last.pt`, 300M steps),
+falling back to the Wave 4 `runs/checkpoints/ckpt_last.pt` when that run is absent. Re-exports
+on the fly so nothing depends on a stale artifact. CPU only.
 """
 
 import json
@@ -18,7 +19,10 @@ import export_onnx
 from runtime.policy import RLController
 
 DRL = Path(__file__).resolve().parents[1]
-CKPT = DRL / "runs" / "checkpoints" / "ckpt_last.pt"
+# R7 (300M) is the model that ships; tests must guard THAT artifact, not an obsolete one.
+CKPT = DRL / "runs" / "r7_300m" / "ckpt" / "ckpt_last.pt"
+if not CKPT.is_file():
+    CKPT = DRL / "runs" / "checkpoints" / "ckpt_last.pt"
 ENV = DRL / "configs" / "env.yaml"
 TOL = 1e-4
 LAT0, LON0 = -6.2, 106.8
