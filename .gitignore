@@ -7,4 +7,6 @@ runs/
 # Evaluation artefacts (CSV + plots). Regenerable from a checkpoint with evaluate.py;
 # large and machine-specific, so they stay out of git like runs/.
 results/
+# A1: per-run evaluation outputs and logs. Regenerable from a checkpoint + summary.json;
+# the summary.json the tables are built from is kept per run dir but never committed.
 

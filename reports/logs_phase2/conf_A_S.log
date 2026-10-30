@@ -1,0 +1,19 @@
+FastEnv parity vs AsvEnv: obs 4.81 state 0 reward 0 dist 0 | step 121.1 ms -> 53.1 ms (3 envs, cuda)
+checkpoint runs\r8_A\ckpt\ckpt_last.pt steps=9961472 iteration=152 obs_mean|max|=0 obs_std=[1,1]
+E:\buoy-project\drl\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4653: RuntimeWarning: invalid value encountered in subtract
+  diff_b_a = subtract(b, a)
+  sk_wind      ppo seed   100 n_ep 8/8 radial   5.01 m p95  28.22 m settled  25.0% wp  nan lap   nan% (170 s) r8 sat_frac=0.0335 reversal_rate=0 arrival_speed_mean_mps=nan hold_rms_m=1.98 hold_p95_m=2.35 tw [None, None, None, None]
+  sk_wind      ppo seed   101 n_ep 8/8 radial   3.13 m p95  15.43 m settled  25.0% wp  nan lap   nan% (178 s) r8 sat_frac=0.0168 reversal_rate=0 arrival_speed_mean_mps=nan hold_rms_m=1.72 hold_p95_m=1.97 tw [None, None, None, None]
+  sk_wind      ppo seed   102 n_ep 8/8 radial   2.38 m p95  13.28 m settled  37.5% wp  nan lap   nan% (173 s) r8 sat_frac=0.0215 reversal_rate=0 arrival_speed_mean_mps=nan hold_rms_m=1.13 hold_p95_m=1.35 tw [None, None, None, None]
+  sk_wind      ppo seed   103 n_ep 8/8 radial   5.38 m p95  29.99 m settled  12.5% wp  nan lap   nan% (171 s) r8 sat_frac=0.0407 reversal_rate=0 arrival_speed_mean_mps=nan hold_rms_m=1.69 hold_p95_m=2.18 tw [None, None, None, None]
+  wp_square    ppo seed  1100 n_ep 8/8 radial   7.55 m p95  28.16 m settled  37.5% wp 3.88 lap  96.9% (180 s) r8 sat_frac=0.0356 reversal_rate=0 arrival_speed_mean_mps=0.856 hold_rms_m=nan hold_p95_m=nan tw [33.1, 75.2, 117.6, 157.8]
+  wp_square    ppo seed  1101 n_ep 8/8 radial   7.91 m p95  28.23 m settled  37.5% wp 3.62 lap  90.6% (179 s) r8 sat_frac=0.0387 reversal_rate=0 arrival_speed_mean_mps=0.732 hold_rms_m=nan hold_p95_m=nan tw [35.0, 104.8, 146.8, 172.1]
+  wp_square    ppo seed  1102 n_ep 8/8 radial   8.33 m p95  28.93 m settled  62.5% wp 4.00 lap 100.0% (179 s) r8 sat_frac=0.0345 reversal_rate=0 arrival_speed_mean_mps=0.809 hold_rms_m=nan hold_p95_m=nan tw [30.9, 82.0, 131.4, 178.9]
+  wp_square    ppo seed  1103 n_ep 8/8 radial   6.52 m p95  25.24 m settled  50.0% wp 3.25 lap  81.2% (179 s) r8 sat_frac=0.0466 reversal_rate=0 arrival_speed_mean_mps=0.88 hold_rms_m=nan hold_p95_m=nan tw [29.1, 70.9, 114.0, 154.5]
+
+| scenario | controller | seeds | episodes | n_episodes | n_envs | duration_s | level | radial_error_mean | radial_error_p95 | radial_error_max | cross_track_rmse | settling_time_s | settling_p95_s | energy | energy_j_proxy | action_rate | settled_pct | waypoints_reached | lap_pct | lap_completed | sat_frac | reversal_rate | arrival_speed_mean_mps | hold_rms_m | hold_p95_m |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sk_wind | ppo | 4 | 1 | 32 | 8 | 300 | 1 | 3.98 | 21.7 | 33 | 7.94 | nan | nan | 92.5 | 1.78e+04 | 0.228 | 25 | nan | nan | 0 | 0.0281 | 0 | nan | 1.63 | 1.96 |
+| wp_square | ppo | 4 | 1 | 32 | 8 | 300 | 1 | 7.58 | 27.6 | 56.5 | 1.19 | nan | nan | 178 | 3.41e+04 | 0.283 | 46.9 | 3.69 | 92.2 | 0.844 | 0.0389 | 0 | 0.819 | nan | nan |
+
+wrote results_a1_conf_A_S (1417 s total, device cuda)
