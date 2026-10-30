@@ -1,0 +1,11 @@
+usage: evaluate.py [-h] [--ckpt CKPT] [--envs ENVS] [--episodes EPISODES]
+                   [--seeds SEEDS] [--seed SEED] [--scenarios SCENARIOS]
+                   [--rough-scale ROUGH_SCALE] [--square-side SQUARE_SIDE]
+                   [--square-hold SQUARE_HOLD]
+                   [--dwell-stay-factor DWELL_STAY_FACTOR]
+                   [--episode-s EPISODE_S] [--dump-conditions]
+                   [--plot-env PLOT_ENV] [--plot-seed PLOT_SEED]
+                   [--device DEVICE] [--out OUT] [--no-plots] [--tol TOL]
+                   [--skip-pid] [--sk-episode-s SK_EPISODE_S] [--level LEVEL]
+                   [--hold-s HOLD_S]
+evaluate.py: error: argument --seeds: invalid int value: '100,101,102,103'

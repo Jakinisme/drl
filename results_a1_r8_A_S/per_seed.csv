@@ -1,0 +1,9 @@
+scenario,controller,seed,seeds,episodes,n_episodes,n_envs,duration_s,level,radial_error_mean,radial_error_p95,radial_error_max,cross_track_rmse,settling_time_s,settling_p95_s,energy,energy_j_proxy,action_rate,settled_pct,waypoints_reached,lap_pct,lap_completed,sat_frac,reversal_rate,arrival_speed_mean_mps,hold_rms_m,hold_p95_m
+sk_wind,ppo,0,4,1,8,8,299.9,1,4.48703,23.5808,33.7527,8.38806,inf,nan,115.884,22259,0.224964,12.5,nan,nan,0,0.0324583,0,nan,1.89477,2.30448
+sk_wind,ppo,1,4,1,8,8,299.9,1,5.4124,33.3277,45.6694,11.4801,inf,nan,101.971,19586.5,0.26577,37.5,nan,nan,0,0.0495833,0,nan,1.74134,2.29426
+sk_wind,ppo,2,4,1,8,8,299.9,1,4.12572,16.177,26.291,6.66615,inf,nan,98.9209,19000.7,0.183682,0,nan,nan,0,0.0124583,0,nan,2.29417,2.61647
+sk_wind,ppo,3,4,1,8,8,299.9,1,4.44852,22.3377,33.7971,8.52304,inf,nan,108.378,20817.2,0.233002,37.5,nan,nan,0,0.0328333,0,nan,1.8317,2.35581
+wp_square,ppo,1000,4,1,8,8,299.9,1,6.8159,24.8278,62.6864,1.50271,inf,nan,158.169,30381.1,0.281892,12.5,2.875,71.875,0.625,0.0486667,0,0.656577,nan,nan
+wp_square,ppo,1001,4,1,8,8,299.9,1,7.83404,28.8427,44.351,1.18007,inf,nan,176.581,33917.6,0.308262,75,4,100,1,0.0775833,0,0.875362,nan,nan
+wp_square,ppo,1002,4,1,8,8,299.9,1,7.81965,28.0172,45.7281,1.6888,inf,nan,159.557,30647.7,0.243181,75,3,75,0.75,0.0260417,0,nan,nan,nan
+wp_square,ppo,1003,4,1,8,8,299.9,1,7.37189,28.3708,50.8453,0.924877,inf,nan,168.605,32385.6,0.285282,62.5,4,100,1,0.03325,0,0.844801,nan,nan

@@ -1,0 +1,156 @@
+{
+ "ckpt": "runs\\r8_control\\ckpt\\ckpt_last.pt",
+ "steps": 9961472,
+ "settings": {
+  "seeds": 4,
+  "envs": 8,
+  "episode_s": 300.0,
+  "sk_episode_s": 300.0,
+  "level": null,
+  "skip_pid_noop": false,
+  "dwell_stay_factor": 1.0,
+  "tol_m": 1.0,
+  "hold_s": 5.0,
+  "scenarios": [
+   "sk_wind",
+   "wp_square"
+  ]
+ },
+ "per_scenario": {
+  "sk_wind": {
+   "n_samples": 3000.0,
+   "duration_s": 299.90000000000003,
+   "radial_error_mean": 4.987050426295006,
+   "radial_error_p95": 24.018955629868593,
+   "radial_error_max": 34.842624811661125,
+   "cross_track_rmse": 9.055456413926034,
+   "settling_time_s": Infinity,
+   "settling_p95_s": NaN,
+   "energy": 128.60087588170234,
+   "action_rate": 0.2250514877737682,
+   "waypoints_reached": NaN,
+   "lap_completed": 0.0,
+   "sat_frac": 0.07801041666666667,
+   "reversal_rate": 0.0,
+   "arrival_speed_mean_mps": NaN,
+   "hold_rms_m": 2.226116313265734,
+   "hold_p95_m": 2.73378945075474,
+   "settled_pct": 0.0,
+   "energy_j_proxy": 24701.65623935739,
+   "lap_pct": NaN,
+   "n_episodes": 32,
+   "geofence_dropped_episodes": NaN
+  },
+  "wp_square": {
+   "n_samples": 3000.0,
+   "duration_s": 299.90000000000003,
+   "radial_error_mean": 7.725199179670888,
+   "radial_error_p95": 28.342047170149783,
+   "radial_error_max": 50.83922020108593,
+   "cross_track_rmse": 1.1293871006390988,
+   "settling_time_s": Infinity,
+   "settling_p95_s": NaN,
+   "energy": 238.59534341507998,
+   "action_rate": 0.3781087623857539,
+   "waypoints_reached": 3.4375,
+   "lap_completed": 0.78125,
+   "sat_frac": 0.22147916666666667,
+   "reversal_rate": 0.0,
+   "arrival_speed_mean_mps": NaN,
+   "hold_rms_m": NaN,
+   "hold_p95_m": NaN,
+   "settled_pct": 0.0,
+   "energy_j_proxy": 45829.393563168574,
+   "lap_pct": 85.9375,
+   "n_episodes": 32,
+   "geofence_dropped_episodes": NaN
+  }
+ },
+ "n_episodes": {
+  "sk_wind": 32,
+  "wp_square": 32
+ },
+ "gate": [
+  {
+   "scenario": "sk_wind",
+   "metric": "settled_pct",
+   "dir": "min",
+   "limit": 80.0,
+   "value": 0.0,
+   "status": "FAIL",
+   "shown": "0",
+   "note": "fraction of episodes that settle inside tol_m; R7 measured 0-53 %"
+  },
+  {
+   "scenario": "sk_wind",
+   "metric": "hold_rms_m",
+   "dir": "max",
+   "limit": 1.5,
+   "value": 2.226116313265734,
+   "status": "FAIL",
+   "shown": "2.23",
+   "note": "RMS radial error over the final 30 s hold (evalkit hold_rms)"
+  },
+  {
+   "scenario": "sk_wind",
+   "metric": "sat_frac",
+   "dir": "max",
+   "limit": 0.3,
+   "value": 0.07801041666666667,
+   "status": "PASS",
+   "shown": "0.078",
+   "note": "fraction of steps with max|a| > 0.9 on any axis"
+  },
+  {
+   "scenario": "sk_wind",
+   "metric": "reversal_rate",
+   "dir": "max",
+   "limit": 30.0,
+   "value": 0.0,
+   "status": "PASS",
+   "shown": "0",
+   "note": "surge sign changes/min, both sides |surge| > 0.5; unit is per MINUTE"
+  },
+  {
+   "scenario": "sk_wind",
+   "metric": "geofence_dropped_episodes",
+   "dir": "max",
+   "limit": 0.0,
+   "value": 0.0,
+   "status": "PASS",
+   "shown": "0",
+   "note": "counted from complete vs simulated episodes; any exit fails the gate"
+  },
+  {
+   "scenario": "wp_square",
+   "metric": "waypoints_reached",
+   "dir": "min",
+   "limit": 3.5,
+   "value": 3.4375,
+   "status": "FAIL",
+   "shown": "3.44",
+   "note": "mean of 4 corners per episode; 4.0 = every corner on every seed"
+  },
+  {
+   "scenario": "wp_square",
+   "metric": "lap_completed",
+   "dir": "min",
+   "limit": 0.75,
+   "value": 0.78125,
+   "status": "PASS",
+   "shown": "0.781",
+   "note": "FRACTION of episodes whose lap is completed (evaluate.aggregate means the bool)"
+  },
+  {
+   "scenario": "wp_square",
+   "metric": "sat_frac",
+   "dir": "max",
+   "limit": 0.3,
+   "value": 0.22147916666666667,
+   "status": "PASS",
+   "shown": "0.221",
+   "note": "fraction of steps with max|a| > 0.9 on any axis"
+  }
+ ],
+ "exit_code": 1
+}

@@ -1,0 +1,9 @@
+FastEnv parity vs AsvEnv: obs 4.74 state 0 reward 0 dist 0 | step 1134.8 ms -> 500.8 ms (3 envs, cuda)
+checkpoint runs\r8_B\ckpt\ckpt_last.pt steps=9961472 iteration=152 obs_mean|max|=0 obs_std=[1,1]
+E:\buoy-project\drl\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4653: RuntimeWarning: invalid value encountered in subtract
+  diff_b_a = subtract(b, a)
+  sk_wind      ppo seed     0 n_ep 8/8 radial   3.02 m p95  21.81 m settled  75.0% wp  nan lap   nan% (457 s) r8 sat_frac=0.0545 reversal_rate=0 arrival_speed_mean_mps=nan hold_rms_m=0.561 hold_p95_m=0.752 tw [None, None, None, None]
+  sk_wind      ppo seed     1 n_ep 8/8 radial   4.72 m p95  32.86 m settled  75.0% wp  nan lap   nan% (414 s) r8 sat_frac=0.0884 reversal_rate=0 arrival_speed_mean_mps=nan hold_rms_m=0.684 hold_p95_m=0.961 tw [None, None, None, None]
+  sk_wind      ppo seed     2 n_ep 8/8 radial   2.29 m p95  13.99 m settled  75.0% wp  nan lap   nan% (582 s) r8 sat_frac=0.0325 reversal_rate=0 arrival_speed_mean_mps=nan hold_rms_m=0.759 hold_p95_m=0.988 tw [None, None, None, None]
+  sk_wind      ppo seed     3 n_ep 8/8 radial   3.79 m p95  22.62 m settled  62.5% wp  nan lap   nan% (1360 s) r8 sat_frac=0.0645 reversal_rate=0 arrival_speed_mean_mps=nan hold_rms_m=0.685 hold_p95_m=0.884 tw [None, None, None, None]
+  wp_square    ppo seed  1000 n_ep 8/8 radial   6.46 m p95  27.75 m settled  12.5% wp 4.00 lap 100.0% (2386 s) r8 sat_frac=0.084 reversal_rate=0 arrival_speed_mean_mps=1.1 hold_rms_m=nan hold_p95_m=nan tw [30.8, 68.2, 104.8, 140.4]

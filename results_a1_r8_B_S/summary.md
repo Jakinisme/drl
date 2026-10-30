@@ -1,0 +1,4 @@
+| scenario | controller | seeds | episodes | n_episodes | n_envs | duration_s | level | radial_error_mean | radial_error_p95 | radial_error_max | cross_track_rmse | settling_time_s | settling_p95_s | energy | energy_j_proxy | action_rate | settled_pct | waypoints_reached | lap_pct | lap_completed | sat_frac | reversal_rate | arrival_speed_mean_mps | hold_rms_m | hold_p95_m |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| sk_wind | ppo | 4 | 1 | 32 | 8 | 300 | 1 | 5.18 | 24.8 | 34.9 | 9.34 | nan | nan | 173 | 3.32e+04 | 0.239 | 12.5 | nan | nan | 0 | 0.0557 | 0 | nan | 2.3 | 3.03 |
+| wp_square | ppo | 4 | 1 | 32 | 8 | 300 | 1 | 7.24 | 27.1 | 52.2 | 1.62 | nan | nan | 170 | 3.27e+04 | 0.242 | 34.4 | 3.53 | 88.3 | 0.844 | 0.0304 | 0 | 0.772 | nan | nan |

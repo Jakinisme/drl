@@ -1,0 +1,22 @@
+ckpt runs\r8_A\ckpt\ckpt_last.pt steps=9961472 iteration=152
+gate E:\buoy-project\drl\configs\gates.yaml | device cuda | scenario sk_wind,wp_square | seeds 4 x envs 8 | episode-s 300.0 (wp_square only) sk-episode-s 300.0 (sk_wind/rough_sea only) level default 1.0 dwell-stay 1.0 tol 1.0 m hold 5.0 s (sim, placeholder physics — says nothing about the real vessel)
+E:\buoy-project\drl\.venv\Lib\site-packages\numpy\lib\_function_base_impl.py:4653: RuntimeWarning: invalid value encountered in subtract
+  diff_b_a = subtract(b, a)
+  sk_wind    scored 32 episodes, settled 0.0%, radial 4.66 m, settling inf
+  wp_square  scored 32 episodes, settled 0.0%, radial 7.81 m, settling inf
+
+scenario   metric                     dir   value  status
+---------------------------------------------------------
+sk_wind    settled_pct                min       0  FAIL  
+sk_wind    hold_rms_m                 max    1.95  FAIL  
+sk_wind    sat_frac                   max  0.0395  PASS  
+sk_wind    reversal_rate              max       0  PASS  
+sk_wind    geofence_dropped_episodes  max       0  PASS  
+wp_square  waypoints_reached          min    3.69  PASS  
+wp_square  lap_completed              min   0.844  PASS  
+wp_square  sat_frac                   max  0.0522  PASS  
+
+episodes scored (complete only): sk_wind 32, wp_square 32 | score('complete') cannot see auto-reset repeats, so >= 32 env-episodes were simulated per scenario
+
+GATE FAIL: sk_wind.settled_pct=FAIL, sk_wind.hold_rms_m=FAIL
+wrote results_a1_gate_A.json

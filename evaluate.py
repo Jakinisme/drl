@@ -108,6 +108,8 @@ if str(ROOT) not in sys.path:
 
 from baseline_pid import THRUST_DEADZONE, PIDBaseline               # noqa: E402
 from envs.asv_env import AsvEnv                                     # noqa: E402
+# NOT imported here: pathgen imports SquarePath from this module (circular).
+# run_rollout() does `from pathgen import StructuredPath` where it is used.
 from evalkit.metrics import summarize                               # noqa: E402
 from sim.disturbance import Disturbance                             # noqa: E402
 from models import build_policy                                     # noqa: E402
@@ -128,6 +130,14 @@ SCENARIOS: dict[str, dict] = {
     # auxiliary probe: the C1 coupling claim with the Pi-side 0.05 output deadband removed and
     # the physics randomisation off.  Not a fair PID setting, not headline.
     "sk_pid_soft": dict(mode=1, episode_s=120.0, square=False, rough=False, pid_soft=True),
+    # R9: structured plans. `wp_square` stays the legacy square so every earlier result keeps
+    # its meaning; these three are a different geometry family, not a replacement.
+    "wp_line": dict(mode=0, episode_s=120.0, square=False, rough=False, pid_soft=False,
+                    pattern="straight"),
+    "wp_zigzag": dict(mode=0, episode_s=200.0, square=False, rough=False, pid_soft=False,
+                      pattern="zigzag"),
+    "wp_hairpin": dict(mode=0, episode_s=160.0, square=False, rough=False, pid_soft=False,
+                       pattern="turn"),
 }
 
 SCENARIO_NOTES = {
@@ -138,6 +148,10 @@ SCENARIO_NOTES = {
                  "(wind/current/wave TODO SYSID keys)",
     "sk_pid_soft": "AUX: station keeping, 120 s, level 1.0, physics randomisation OFF, "
                    "PID 0.05 output deadband OFF",
+    "wp_line": "R9: 2-3 collinear waypoints (pattern 'straight'), 120 s, level 1.0",
+    "wp_zigzag": "R9: 4-6 waypoints with alternating 60-120 deg turns (pattern 'zigzag'), "
+                 "200 s, level 1.0",
+    "wp_hairpin": "R9: 3 waypoints with one 90 deg turn (pattern 'turn'), 160 s, level 1.0",
 }
 
 METRIC_COLS = ["radial_error_mean", "radial_error_p95", "radial_error_max",
@@ -650,8 +664,10 @@ def run_rollout(kind: str, policy, device: torch.device, scen: dict, seed: int,
     for _ep in range(int(episodes)):
         obs = env.reset()                       # all envs: identical start for both controllers
         ctrl = make_controller(kind, policy, device, scen, env.policy_dt)
-        path = (SquarePath(env, square_side, hold_s, dwell_stay)
-                if scen["square"] else None)
+        from pathgen import StructuredPath   # circular with this module; see the import block
+        path = (StructuredPath(env, square_side, hold_s, dwell_stay,
+                               pattern=scen.get("pattern", "legacy_square"), seed=seed)
+                if scen["square"] or scen.get("pattern") else None)
         # capture the episode's conditions AFTER SquarePath, so the spawn pose, the
         # randomisation draws and the corner list all match what the episode runs with
         if dump:
